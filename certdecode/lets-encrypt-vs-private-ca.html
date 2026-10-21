@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Let's Encrypt vs a private CA — which PKI, and how to automate renewal</title>
+<meta name="description" content="A decision guide between Let's Encrypt and a private CA: when each is right, what the Let's Encrypt rate limits are, how ACME challenges differ, and how to automate renewal without downtime.">
+<link rel="canonical" href="https://certdecode.pages.dev/lets-encrypt-vs-private-ca.html">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Cert<span>Decode</span></a>
+    <p class="tagline">TLS certificate verification errors, decoded — cause, diagnosis, fix.</p>
+  </div>
+</header>
+
+<nav class="site" aria-label="Sections">
+  <ul>
+    <li><a href="index.html">Error lookup</a></li>
+    <li><a href="self-signed-certificate-in-chain.html">Self-signed in chain</a></li>
+    <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></li>
+    <li><a href="openssl-verify-error-codes.html">OpenSSL codes</a></li>
+    <li><a href="node-js-tls-certificate-errors.html">Node.js</a></li>
+    <li><a href="python-certificate-verify-failed.html">Python</a></li>
+    <li><a href="curl-error-60.html">curl</a></li>
+    <li><a href="git-ssl-certificate-problem.html">Git</a></li>
+    <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+    <li><a href="lets-encrypt-vs-private-ca.html" aria-current="page">LE vs private CA</a></li>
+  </ul>
+</nav>
+
+<main id="main">
+
+<h1>Let's Encrypt or a private CA?</h1>
+<p class="lede">Choosing a certificate authority is mostly a question about <em>who has to trust you</em>. A public CA asks the whole internet to trust you; a private CA asks your own systems. That difference cascades into cost, automation and every trust error you will ever debug.</p>
+
+<h2>The decision in one table</h2>
+
+<table>
+  <thead>
+    <tr><th></th><th>Public CA (Let's Encrypt and friends)</th><th>Private CA you operate</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>Names it can certify</th>
+      <td>Public DNS names you control. Wildcards supported.</td>
+      <td>Anything, including internal names and IP addresses.</td>
+    </tr>
+    <tr>
+      <th>Who must trust it</th>
+      <td>The entire internet — already true for the root CA.</td>
+      <td>Your own clients. Every one of them needs the root installed.</td>
+    </tr>
+    <tr>
+      <th>Validation</th>
+      <td>ACME: the CA checks you control the name.</td>
+      <td>Your policy: whatever your CA is configured to check.</td>
+    </tr>
+    <tr>
+      <th>Cost</th>
+      <td>Free.</td>
+      <td>The cost of running the CA and distributing the root.</td>
+    </tr>
+    <tr>
+      <th>Typical certificate lifetime</th>
+      <td>90 days, so automation is mandatory.</td>
+      <td>Whatever you set — often a year, which allows slow manual renewal.</td>
+    </tr>
+    <tr>
+      <th>Revocation</th>
+      <td>CRL and OCSP; short-lived certificates reduce how much revocation you need.</td>
+      <td>You define it, including CRLs and short-lived certificates.</td>
+    </tr>
+    <tr>
+      <th>Best for</th>
+      <td>Anything on the public internet.</td>
+      <td>Internal services, service meshes, private service-to-service traffic.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>When a private CA is the right answer</h2>
+
+<ul>
+  <li>The name is not publicly resolvable — <code>payments.svc.cluster.local</code>, a database replica, an internal admin panel.</li>
+  <li>You want certificates that live for years, so nothing depends on renewal automation being reliable.</li>
+  <li>Your platform already distributes trust: a base image, a configuration management run, an MDM profile. In that world a private CA is nearly free to operate.</li>
+  <li>You want short-lived, automatically-minted identities — the model behind service meshes and SPIFFE — where the CA is the source of identity rather than a certificate of convenience.</li>
+</ul>
+
+<p>The cost of a private CA is not running the CA. It is the <em>trust distribution</em>: every machine, container image, language runtime and third-party tool that has to talk to your services now needs the root. That is the same problem as <a href="unable-to-get-local-issuer-certificate.html">unable to get local issuer certificate</a>, except now you own it forever.</p>
+
+<h2>When Let's Encrypt is the right answer</h2>
+
+<ul>
+  <li>The name is public and you want the world to trust it.</li>
+  <li>You want no CA to operate and no root to distribute.</li>
+  <li>You can run an ACME client on the machine that serves the certificate, or use a hosted automation service.</li>
+</ul>
+
+<p>The trade-off is short lifetimes. Let's Encrypt publishes certificates valid for <strong>90 days</strong>, and its guidance is to renew when roughly one third of the lifetime remains — around 30 days before expiry. If your renewal automation can fail silently for a month, you do not want a 90-day certificate.</p>
+
+<h2>Let's Encrypt rate limits you will meet</h2>
+
+<p>These are global limits, not per-account, and they are the ones that bite people running a fleet of hosts:</p>
+
+<table>
+  <thead>
+    <tr><th>Limit</th><th>Value</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>New certificates per registered domain</td>
+      <td><strong>50 every 7 days</strong>, counted globally across all accounts. The allowance refills at about one certificate every 202 minutes.</td>
+    </tr>
+    <tr>
+      <td>New orders per account</td>
+      <td><strong>300 every 3 hours</strong>, refilling at one order every 36 seconds.</td>
+    </tr>
+    <tr>
+      <td>Identifiers per certificate</td>
+      <td>Up to <strong>100</strong> DNS names or IP addresses, depending on the certificate profile selected.</td>
+    </tr>
+    <tr>
+      <td>Duplicate certificates for the same exact set of identifiers</td>
+      <td>A small weekly allowance — reissuing the identical certificate repeatedly will hit it.</td>
+    </tr>
+    <tr>
+      <td>Authorization failures per identifier per account</td>
+      <td>A handful per hour; repeated failed challenges are counted, not just successes.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Two practical consequences. First, a registered domain means the part you bought from a registrar — <code>example.com</code>, not <code>api.example.com</code> — so fifty certificates a week covers one domain, not fifty subdomains' worth of separate issuance. Second, if you issue one certificate per host rather than one certificate with many SANs, you burn the allowance quickly and hit the duplicate-certificate limit while doing it. Fewer, wider certificates are the better default.</p>
+
+<p>Note that a registered domain for an IP address is treated as the exact address (IPv4) or the containing /64 range (IPv6), which is a consequence of Let's Encrypt issuing certificates for IP addresses.</p>
+
+<h2>ACME challenges</h2>
+
+<table>
+  <thead>
+    <tr><th>Challenge</th><th>How it works</th><th>Use it when</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>http-01</code></td>
+      <td>You serve a token at <code>http://domain/.well-known/acme-challenge/…</code>.</td>
+      <td>The default. Port 80 must be reachable from the internet.</td>
+    </tr>
+    <tr>
+      <td><code>dns-01</code></td>
+      <td>You add a TXT record for the domain, using an API token for your DNS provider.</td>
+      <td>Wildcards, internal DNS, or no inbound port 80.</td>
+    </tr>
+    <tr>
+      <td><code>tls-alpn-01</code></td>
+      <td>You answer the challenge during the TLS handshake on port 443.</td>
+      <td>HTTP is not an option but DNS automation is not either.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Wildcard certificates require <code>dns-01</code>. That means your DNS provider needs an API token, which is a credential with more power than you want lying around: restrict it to the specific zone and to DNS record creation only, never to account administration.</p>
+
+<h2>Automating renewal</h2>
+
+<p>The rule that keeps outages away: renew <em>early</em>, and make the renewal fail loudly.</p>
+
+<pre><code># certbot: test the configuration and renewal path without touching the live cert
+sudo certbot renew --dry-run
+
+# the systemd timer that ships with most distributions
+systemctl list-timers | grep certbot
+systemctl status certbot.timer</code></pre>
+
+<p>Four things to get right:</p>
+<ol>
+  <li><strong>Renew early.</strong> A 90-day certificate with renewal starting at 30 days remaining gives you three chances to fix a failure. Renewal at the last day gives you none.</li>
+  <li><strong>Reload the service after renewal.</strong> A renewed certificate on disk does nothing until the server reloads it. Hooks exist for exactly this — <code>--deploy-hook</code> in certbot, <code>--exec /path/to/reload.sh</code> in <code>acme.sh</code>, <code>renewHook</code> in <code>lego</code>.</li>
+  <li><strong>Check the expiry, not the process.</strong> Alert on the certificate's <code>notAfter</code> with a monitoring probe; a renewal job that fails silently looks exactly like a renewal job that is working.</li>
+  <li><strong>Rehearse it.</strong> Run the renewal in a staging environment. Let's Encrypt has a staging environment with its own rate limits and untrusted certificates, specifically so you can test a broken configuration without burning production limits.</li>
+</ol>
+
+<p>Two ACME clients worth knowing:</p>
+
+<pre><code># certbot — the most widely documented
+sudo certbot certonly --webroot -w /var/www/html -d example.com -d www.example.com
+
+# acme.sh — shell-based, popular in containers and with DNS API plugins
+acme.sh --issue --dns dns_cf -d example.com -d '*.example.com' --keylength ec-256</code></pre>
+
+<p>When you use <code>dns-01</code> with a wildcard, remember that the wildcard certificate also needs the base domain in the same certificate, and that the DNS API token is the credential you now have to protect.</p>
+
+<h2>Private CA automation</h2>
+
+<p>If you run your own CA, the same discipline applies with a different tooling vocabulary. Certificate authorities like step-ca and Smallstep's tooling, or Vault's PKI secrets engine, all issue certificates from an API and can revoke them. What you must build yourself is the second half of the system: distributing the root to every client that needs to verify you.</p>
+
+<p>That distribution is where private CAs usually fail in practice:</p>
+
+<ul>
+  <li>Base images built before the root existed, never rebuilt.</li>
+  <li>Developer laptops that trust the production CA, or worse, trust a throwaway dev CA that is still in the trust store after the migration.</li>
+  <li>Tools that keep their own store — Node.js, Go, Python's certifi — which are not covered by an OS-level trust install.</li>
+  <li>Certificates issued by an intermediate whose root is installed but whose intermediate is not sent by the server — the <a href="unable-to-get-local-issuer-certificate.html">incomplete chain</a> problem, entirely self-inflicted.</li>
+</ul>
+
+<p>Two mitigations that work well: issue directly from the root (one level, nothing to omit) or serve the full chain every time; and make trust installation part of the machine or image build, not a runbook step.</p>
+
+<h2>A practical hybrid</h2>
+
+<p>Most mature environments run both:</p>
+
+<table>
+  <thead>
+    <tr><th>Surface</th><th>PKI</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Public websites and APIs</td><td>Let's Encrypt, renewed automatically</td></tr>
+    <tr><td>Internal service-to-service traffic</td><td>Private CA with short-lived certificates</td></tr>
+    <tr><td>Local development</td><td>A local development CA whose root is installed on developer machines only</td></tr>
+    <tr><td>Hardware and offline devices</td><td>Private CA with long lifetimes and a manual revocation process</td></tr>
+  </tbody>
+</table>
+
+<p>The rule of thumb: if a certificate's audience is "everyone", use a public CA. If its audience is "systems you administer", a private CA is cheaper and safer.</p>
+
+<!-- ADSENSE-SLOT -->
+
+<h2>Related</h2>
+<ul class="related">
+  <li><a href="self-signed-certificate-in-chain.html">Self-signed certificate in chain</a> — what a private CA looks like to a client that does not trust it</li>
+  <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer certificate</a> — trust distribution in practice</li>
+  <li><a href="openssl-inspect-certificate.html">Inspecting certificates with openssl</a></li>
+</ul>
+
+<!-- AFFILIATE: acme-certificate-provider -->
+
+<div class="pager">
+  <a href="openssl-inspect-certificate.html">&larr; openssl cheatsheet</a>
+  <a href="index.html">Back to the error lookup &rarr;</a>
+</div>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <h2>CertDecode</h2>
+    <p>An independent reference for TLS certificate troubleshooting. Every command and error code on this site was checked against upstream OpenSSL, curl, Node.js, pip and Git documentation.</p>
+    <ul>
+      <li><a href="index.html">Error lookup</a></li>
+      <li><a href="openssl-verify-error-codes.html">OpenSSL verify codes</a></li>
+      <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+      <li><a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs private CA</a></li>
+    </ul>
+    <p class="disclosure">CertDecode is not affiliated with the OpenSSL Project, curl, the Node.js Foundation, the Python Software Foundation, the Git project or Let's Encrypt. Site text and examples are original. Content is drafted with AI assistance and reviewed against the upstream sources cited on each page; commands are safe to run, and the verification-bypass flags we discuss are shown as what they are rather than as recommendations.</p>
+  </div>
+</footer>
+
+</body>
+</html>

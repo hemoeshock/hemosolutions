@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Python CERTIFICATE_VERIFY_FAILED — requests, urllib3 and pip fixes</title>
+<meta name="description" content="How to fix CERTIFICATE_VERIFY_FAILED in Python: the requests verify parameter, REQUESTS_CA_BUNDLE, certifi versus the system store, urllib3 and aiohttp contexts, and pip's --cert flag.">
+<link rel="canonical" href="https://certdecode.pages.dev/python-certificate-verify-failed.html">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Cert<span>Decode</span></a>
+    <p class="tagline">TLS certificate verification errors, decoded — cause, diagnosis, fix.</p>
+  </div>
+</header>
+
+<nav class="site" aria-label="Sections">
+  <ul>
+    <li><a href="index.html">Error lookup</a></li>
+    <li><a href="self-signed-certificate-in-chain.html">Self-signed in chain</a></li>
+    <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></li>
+    <li><a href="openssl-verify-error-codes.html">OpenSSL codes</a></li>
+    <li><a href="node-js-tls-certificate-errors.html">Node.js</a></li>
+    <li><a href="python-certificate-verify-failed.html" aria-current="page">Python</a></li>
+    <li><a href="curl-error-60.html">curl</a></li>
+    <li><a href="git-ssl-certificate-problem.html">Git</a></li>
+    <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+    <li><a href="lets-encrypt-vs-private-ca.html">LE vs private CA</a></li>
+  </ul>
+</nav>
+
+<main id="main">
+
+<h1>Python <span class="error-string">CERTIFICATE_VERIFY_FAILED</span></h1>
+<p class="lede">Python's error message is a wrapper, and the useful part is buried two layers down. Here is how to read it, which trust store Python is actually using, and the correct knob for requests, urllib3, aiohttp, httpx and pip.</p>
+
+<h2>Read the whole exception</h2>
+
+<pre><code>requests.exceptions.SSLError: (MaxRetryError("HTTPSConnectionPool(host='pypi.org', port=443): Max retries exceeded with url: /simple/ (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:NNNN)'))"))</code></pre>
+
+<p>Three layers, and each one adds information:</p>
+<ol>
+  <li><code>MaxRetryError</code> — urllib3 gave up after retries. Says nothing about TLS.</li>
+  <li><code>SSLError</code> — the TLS handshake failed.</li>
+  <li><code>SSLCertVerificationError</code> — verification failed, with the OpenSSL reason in the message: <span class="error-string">unable to get local issuer certificate</span>, <span class="error-string">self signed certificate</span>, <span class="error-string">certificate has expired</span>.</li>
+</ol>
+
+<p>Python exposes the OpenSSL numbers directly on the exception:</p>
+
+<pre><code>import requests, ssl
+
+try:
+    requests.get("https://pypi.org/simple/", timeout=10)
+except requests.exceptions.SSLError as err:
+    cause = err.args[0]
+    while cause is not None:
+        if isinstance(cause, ssl.SSLCertVerificationError):
+            print("verify code:", cause.verify_code)      # the X509_V_ERR number
+            print("verify message:", cause.verify_message)
+        cause = getattr(cause, "reason", None) or cause.__cause__</code></pre>
+
+<p><code>verify_code</code> is the same number OpenSSL prints, so you can look it up on the <a href="openssl-verify-error-codes.html">OpenSSL verify code page</a>.</p>
+
+<h2>Which trust store is Python using?</h2>
+
+<p>This is the single most common cause of "it works on my laptop but not in the container".</p>
+
+<table>
+  <thead>
+    <tr><th>Component</th><th>Default roots</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>ssl.create_default_context()</code></td><td>OpenSSL's default CA paths — <code>SSL_CERT_FILE</code> / <code>SSL_CERT_DIR</code> if set, otherwise the system bundle. On macOS this is <em>not</em> the system keychain.</td></tr>
+    <tr><td>requests / urllib3</td><td>The <code>certifi</code> bundle when certifi is installed (which it always is in a fresh virtualenv), otherwise the system store.</td></tr>
+    <tr><td>pip</td><td>Its own vendored <code>certifi</code> bundle.</td></tr>
+  </tbody>
+</table>
+
+<p>Ask the interpreter what it is actually using:</p>
+
+<pre><code>import ssl
+print(ssl.get_default_verify_paths())
+
+try:
+    import certifi
+    print(certifi.where())
+except ImportError:
+    print("certifi not installed")</code></pre>
+
+<p>If the venv points at a <code>certifi</code> file inside <code>site-packages</code>, then installing a corporate root into <code>/etc/ssl/certs</code> will not change anything for that venv. You need either <code>REQUESTS_CA_BUNDLE</code> or an explicit <code>verify=</code> path.</p>
+
+<h2>requests: the <code>verify</code> parameter</h2>
+
+<p>The parameter takes <code>True</code>/<code>False</code> <em>or</em> a path to a CA bundle:</p>
+
+<pre><code>import requests
+
+# one call
+requests.get("https://internal.example.com/", verify="/etc/ssl/certs/ca-bundle.pem", timeout=10)
+
+# or for a session
+s = requests.Session()
+s.verify = "/etc/ssl/certs/ca-bundle.pem"
+s.get("https://internal.example.com/", timeout=10)</code></pre>
+
+<p>The file can be a single CA certificate or a bundle of many. If you need the system roots <em>and</em> your corporate root, concatenate them into one file rather than passing only the corporate one:</p>
+
+<pre><code>cat /etc/ssl/certs/ca-certificates.crt corp-root-ca.pem &gt; combined-bundle.pem</code></pre>
+
+<h3>Environment variables</h3>
+
+<pre><code>export REQUESTS_CA_BUNDLE=/etc/ssl/certs/combined-bundle.pem
+# curl's variable is honoured by requests too:
+export CURL_CA_BUNDLE=/etc/ssl/certs/combined-bundle.pem</code></pre>
+
+<p>Both are supported by requests and both take a path to a CA bundle. <code>REQUESTS_CA_BUNDLE</code> is the more explicit of the two; <code>CURL_CA_BUNDLE</code> is useful because other tools in the same environment understand it.</p>
+
+<h3>When you have no choice but <code>verify=False</code></h3>
+
+<p>There are legitimate short-lived cases — a one-off call against a staging box with a self-signed certificate, before the CA is deployed. If you must:</p>
+
+<pre><code>import requests
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+requests.get("https://staging.internal.example.com/", verify=False, timeout=10)</code></pre>
+
+<p>Silencing the warning is fine; leaving <code>verify=False</code> in a code path that runs in production is not. It applies to the whole request, and urllib3's warning exists because the connection is no longer protected against an active attacker.</p>
+
+<h2>urllib3 directly</h2>
+
+<pre><code>import ssl
+import urllib3
+
+ctx = ssl.create_default_context(cafile="/etc/ssl/certs/corp-root-ca.pem")
+http = urllib3.PoolManager(ssl_context=ctx)
+
+r = http.request("GET", "https://internal.example.com/")
+print(r.status)</code></pre>
+
+<p>You can also pass the file paths explicitly:</p>
+
+<pre><code>http = urllib3.PoolManager(cert_reqs="CERT_REQUIRED", ca_certs="/etc/ssl/certs/corp-root-ca.pem")</code></pre>
+
+<p>Note that <code>PoolManager</code> is created once and reused; creating one per request defeats connection pooling and makes the failure much harder to read in logs.</p>
+
+<h2>aiohttp</h2>
+
+<pre><code>import aiohttp, ssl
+
+ctx = ssl.create_default_context(cafile="/etc/ssl/certs/corp-root-ca.pem")
+connector = aiohttp.TCPConnector(ssl=ctx)
+
+async with aiohttp.ClientSession(connector=connector) as session:
+    async with session.get("https://internal.example.com/") as resp:
+        print(resp.status)</code></pre>
+
+<p>The same pattern applies to <code>httpx</code>, which accepts a bundle path directly:</p>
+
+<pre><code>import httpx
+
+client = httpx.Client(verify="/etc/ssl/certs/corp-root-ca.pem")
+client.get("https://internal.example.com/")</code></pre>
+
+<h2>pip</h2>
+
+<p>pip is its own client with its own flags and its own variables:</p>
+
+<pre><code># point pip at a CA bundle
+pip install --cert /etc/ssl/certs/combined-bundle.pem some-package
+
+# or set it once
+export PIP_CERT=/etc/ssl/certs/combined-bundle.pem</code></pre>
+
+<p>pip also documents <code>--trusted-host</code> (environment variable <code>PIP_TRUSTED_HOST</code>), which marks a host as trusted even though it has no valid HTTPS — it also permits plain HTTP to that host:</p>
+
+<pre><code>pip install --trusted-host pypi.internal.example.com some-package</code></pre>
+
+<p>Prefer <code>--cert</code>. <code>--trusted-host</code> exists for the case where you cannot obtain the CA certificate at all; it removes protection rather than restoring it.</p>
+
+<p>For client certificates — the mirror image of this problem, where <em>you</em> must present a certificate — pip has <code>--client-cert</code> (<code>PIP_CLIENT_CERT</code>), pointing at a single PEM file containing both the private key and the certificate.</p>
+
+<h2>Corporate proxies on macOS and Linux</h2>
+
+<p>If a proxy re-signs your traffic, its root has to be in the bundle Python reads. The combination that usually works:</p>
+
+<pre><code># 1. install the corporate root
+sudo cp corp-root-ca.pem /usr/local/share/ca-certificates/corp-root-ca.crt
+sudo update-ca-certificates
+
+# 2. point Python's clients at a bundle that includes it
+export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+export PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+
+# 3. if a proxy variable is set, requests will use it
+env | grep -i proxy</code></pre>
+
+<p>On macOS, <code>update-ca-certificates</code> is not the mechanism — install the certificate with the <code>security add-trusted-cert</code> command or the Keychain Access UI, and point <code>REQUESTS_CA_BUNDLE</code> at the exported PEM because Python does not read the macOS keychain by default:</p>
+
+<pre><code>security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain corp-root-ca.pem
+
+export REQUESTS_CA_BUNDLE=/etc/ssl/cert.pem</code></pre>
+
+<!-- ADSENSE-SLOT -->
+
+<h2>Checklist</h2>
+
+<ol>
+  <li>Print the exception's <code>verify_code</code> and <code>verify_message</code> — the message tells you which of the three failures you have.</li>
+  <li>Find out which bundle the failing client reads: <code>certifi.where()</code> for requests and pip, <code>ssl.get_default_verify_paths()</code> for the standard library.</li>
+  <li>Confirm what the server actually sends with <code>openssl s_client -showcerts</code>. One certificate means the server omitted the intermediate.</li>
+  <li>Add the CA — as a bundle that includes your public roots, not a replacement file.</li>
+  <li>Re-run the failing command. Do not repeat the same fix if it still fails; read the new error.</li>
+</ol>
+
+<h2>Related</h2>
+<ul class="related">
+  <li><a href="openssl-verify-error-codes.html">OpenSSL verify error codes</a> — what <code>verify_code</code> means</li>
+  <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer certificate</a></li>
+  <li><a href="node-js-tls-certificate-errors.html">Node.js equivalents</a></li>
+</ul>
+
+<!-- AFFILIATE: python-tls-tooling -->
+
+<div class="pager">
+  <a href="node-js-tls-certificate-errors.html">&larr; Node.js</a>
+  <a href="curl-error-60.html">Next: curl exit 60 &rarr;</a>
+</div>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <h2>CertDecode</h2>
+    <p>An independent reference for TLS certificate troubleshooting. Every command and error code on this site was checked against upstream OpenSSL, curl, Node.js, pip and Git documentation.</p>
+    <ul>
+      <li><a href="index.html">Error lookup</a></li>
+      <li><a href="openssl-verify-error-codes.html">OpenSSL verify codes</a></li>
+      <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+      <li><a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs private CA</a></li>
+    </ul>
+    <p class="disclosure">CertDecode is not affiliated with the OpenSSL Project, curl, the Node.js Foundation, the Python Software Foundation, the Git project or Let's Encrypt. Site text and examples are original. Content is drafted with AI assistance and reviewed against the upstream sources cited on each page; commands are safe to run, and the verification-bypass flags we discuss are shown as what they are rather than as recommendations.</p>
+  </div>
+</footer>
+
+</body>
+</html>

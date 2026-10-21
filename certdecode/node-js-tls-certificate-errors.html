@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Node.js TLS certificate errors — NODE_EXTRA_CA_CERTS and the ca option</title>
+<meta name="description" content="Node.js reports OpenSSL verification failures as error codes such as DEPTH_ZERO_SELF_SIGNED_CERT and ERR_TLS_CERT_ALTNAME_INVALID. How to fix them properly with NODE_EXTRA_CA_CERTS, the ca option and servername.">
+<link rel="canonical" href="https://certdecode.pages.dev/node-js-tls-certificate-errors.html">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Cert<span>Decode</span></a>
+    <p class="tagline">TLS certificate verification errors, decoded — cause, diagnosis, fix.</p>
+  </div>
+</header>
+
+<nav class="site" aria-label="Sections">
+  <ul>
+    <li><a href="index.html">Error lookup</a></li>
+    <li><a href="self-signed-certificate-in-chain.html">Self-signed in chain</a></li>
+    <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></li>
+    <li><a href="openssl-verify-error-codes.html">OpenSSL codes</a></li>
+    <li><a href="node-js-tls-certificate-errors.html" aria-current="page">Node.js</a></li>
+    <li><a href="python-certificate-verify-failed.html">Python</a></li>
+    <li><a href="curl-error-60.html">curl</a></li>
+    <li><a href="git-ssl-certificate-problem.html">Git</a></li>
+    <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+    <li><a href="lets-encrypt-vs-private-ca.html">LE vs private CA</a></li>
+  </ul>
+</nav>
+
+<main id="main">
+
+<h1>Node.js TLS certificate errors</h1>
+<p class="lede">Node.js does not have its own certificate logic — it uses OpenSSL and translates the result into an error with a <code>code</code> property. That code is the key to everything on this page, and Node's trust store is <em>not</em> the operating system's, which is the source of most surprises.</p>
+
+<h2>The error codes Node exposes</h2>
+
+<p>When a TLS connection fails, the error object carries a <code>code</code>. Print it and you have the diagnosis:</p>
+
+<pre><code>try {
+  await fetch("https://internal.example.com/");
+} catch (err) {
+  console.error(err.code);   // e.g. 'DEPTH_ZERO_SELF_SIGNED_CERT'
+  console.error(err.message);
+  console.error(err.cause);
+}</code></pre>
+
+<table>
+  <thead>
+    <tr><th><code>error.code</code></th><th>Meaning</th><th>Where to look</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>DEPTH_ZERO_SELF_SIGNED_CERT</code></td><td>The leaf certificate is self-signed.</td><td><a href="self-signed-certificate-in-chain.html">Self-signed leaf</a></td></tr>
+    <tr><td><code>SELF_SIGNED_CERT_IN_CHAIN</code></td><td>The chain contains a self-signed CA you do not trust.</td><td><a href="self-signed-certificate-in-chain.html">Self-signed in chain</a></td></tr>
+    <tr><td><code>UNABLE_TO_GET_ISSUER_CERT</code></td><td>The issuer could not be fetched.</td><td>Chain file / network</td></tr>
+    <tr><td><code>UNABLE_TO_GET_ISSUER_CERT_LOCALLY</code></td><td>No local copy of the issuer certificate.</td><td><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></td></tr>
+    <tr><td><code>UNABLE_TO_VERIFY_LEAF_SIGNATURE</code></td><td>Only one certificate was available and it is not self-signed — the server sent just the leaf.</td><td>Server chain configuration</td></tr>
+    <tr><td><code>CERT_UNTRUSTED</code></td><td>The certificate is marked untrusted in the store.</td><td>Trust store</td></tr>
+    <tr><td><code>INVALID_CA</code></td><td>A CA certificate is missing required basic constraints or key usage.</td><td>CA configuration</td></tr>
+    <tr><td><code>CERT_CHAIN_TOO_LONG</code></td><td>The chain exceeds the maximum depth.</td><td>Server sends too much</td></tr>
+    <tr><td><code>PATH_LENGTH_EXCEEDED</code></td><td>A CA in the chain has issued more certificates than its constraints allow.</td><td>CA configuration</td></tr>
+    <tr><td><code>HOSTNAME_MISMATCH</code></td><td>Certificate name does not match the requested host.</td><td><a href="#altname">Altname mismatch</a></td></tr>
+    <tr><td><code>ERR_TLS_CERT_ALTNAME_INVALID</code></td><td>The host name or IP of the peer did not match any subjectAltName in its certificate.</td><td><a href="#altname">Altname mismatch</a></td></tr>
+    <tr><td><code>ERR_TLS_CERT_ALTNAME_FORMAT</code></td><td>A <code>subjectaltname</code> value you supplied violates the encoding rules.</td><td>Your option value</td></tr>
+  </tbody>
+</table>
+
+<p>These are Node's own names for the OpenSSL conditions listed on the <a href="openssl-verify-error-codes.html">verify code page</a>; the mapping is one to one.</p>
+
+<h2>Node's trust store is its own</h2>
+
+<p>Node ships a bundled copy of the Mozilla CA store and uses that for verification by default — <em>not</em> the operating system's certificate store. Two consequences bite regularly:</p>
+
+<ul>
+  <li>Installing a corporate root into the OS store fixes your browser and your <code>curl</code>, and leaves Node still failing.</li>
+  <li>Node's bundled store is updated when Node is updated, so a corporate root that expired last week may still be trusted by an old Node build — and rejected by a newer one.</li>
+</ul>
+
+<p>Recent Node.js releases add switches for the other stores. Node 22.4 introduced <code>--use-system-ca</code>, <code>--use-openssl-ca</code> and <code>--use-bundled-ca</code>; run <code>node --help</code> to confirm your build supports them, since older runtimes will simply reject the flag.</p>
+
+<h2>Adding a CA: <code>NODE_EXTRA_CA_CERTS</code></h2>
+
+<p>The supported way to add a private or corporate root for a whole process:</p>
+
+<pre><code>NODE_EXTRA_CA_CERTS=/etc/ssl/certs/corp-root-ca.pem node server.js</code></pre>
+
+<p>Details worth knowing:</p>
+<ul>
+  <li>It is <strong>additive</strong>: the extra certificates sit alongside the bundled Mozilla roots, so public sites keep working.</li>
+  <li>It is read <strong>once, at startup</strong>. Setting <code>process.env.NODE_EXTRA_CA_CERTS</code> inside the program has no effect.</li>
+  <li>Use an <strong>absolute path</strong>. A relative path is resolved against the working directory of the process, which is rarely what you meant in a container or a service unit.</li>
+  <li>It applies to everything that uses Node's TLS stack: <code>https</code>, <code>http2</code>, <code>fetch</code>, <code>undici</code>, and the <code>npm</code> client.</li>
+  <li>The file may contain one or many PEM certificates; they are all added.</li>
+</ul>
+
+<p>You can confirm what Node actually trusts at runtime:</p>
+
+<pre><code>const tls = require("node:tls");
+
+console.log(tls.getCACertificates("bundled").length); // bundled Mozilla roots
+console.log(tls.getCACertificates("extra").length);   // from NODE_EXTRA_CA_CERTS
+console.log(tls.getCACertificates("system").length);  // only with --use-system-ca</code></pre>
+
+<p>If the "extra" count is zero, the variable did not reach the process — check the service manager's environment file rather than the code.</p>
+
+<h2>The <code>ca</code> option replaces the default store</h2>
+
+<p>Passing <code>ca</code> to <code>https.request</code>, <code>tls.connect</code> or an agent does <em>not</em> add to the bundled roots — it replaces them. Node's documentation is explicit that when <code>ca</code> is specified, the Mozilla CAs are completely replaced.</p>
+
+<pre><code>// Replaces the Mozilla bundle: public sites now fail too.
+const agent = new https.Agent({ ca: fs.readFileSync("corp-root-ca.pem") });
+
+// Keeps the defaults: add your CA to Node's bundled roots.
+const tls = require("node:tls");
+const rootCerts = tls.getCACertificates("bundled");
+const extra = fs.readFileSync("corp-root-ca.pem");
+const agent = new https.Agent({ ca: [...rootCerts, extra] });</code></pre>
+
+<p>If the second snippet is impractical (a very large bundle, an unusual deployment), the <code>NODE_EXTRA_CA_CERTS</code> environment variable is simpler: it adds to the defaults without you having to enumerate them.</p>
+
+<h2 id="altname">Hostname mismatch: <code>ERR_TLS_CERT_ALTNAME_INVALID</code></h2>
+
+<p>When the error is <span class="error-string">Hostname/IP does not match certificate's altnames</span>, the certificate was trusted correctly but the name was wrong. No amount of CA configuration fixes this — the certificate must contain the name you are connecting to, in its Subject Alternative Name list.</p>
+
+<p>Check what the certificate actually covers:</p>
+
+<pre><code>openssl s_client -connect example.com:443 -servername example.com &lt;/dev/null 2&gt;/dev/null \
+  | openssl x509 -noout -ext subjectAltName</code></pre>
+
+<p>Two related traps:</p>
+
+<h3>Connecting to an IP address</h3>
+<p>An IP needs an <code>iPAddress</code> SAN. A <code>DNS:</code> entry with the same text does not match. When you connect to an IP, Node does not send SNI by default; if the server hosts several names, set <code>servername</code> so the right certificate is served:</p>
+
+<pre><code>https.get({
+  host: "10.0.0.5",
+  servername: "api.example.com",   // sent as SNI
+  headers: { host: "api.example.com" }
+});</code></pre>
+
+<h3>Overriding the identity check</h3>
+<p>For a controlled test you can override the identity check, but do it only when you already trust the certificate by other means (a pinned key, a private network you administer):</p>
+
+<pre><code>https.get({
+  host: "example.com",
+  checkServerIdentity: (host, cert) =&gt; undefined  // accept any SAN
+});</code></pre>
+
+<p>Note that this disables the name check only — chain validation still happens.</p>
+
+<h2>Debugging a Node TLS failure</h2>
+
+<pre><code># print the TLS handshake details
+NODE_DEBUG=tls node server.js
+
+# show the certificate chain the server sends
+openssl s_client -connect internal.example.com:443 -servername internal.example.com -showcerts &lt;/dev/null</code></pre>
+
+<p>Two more Node-specific failure modes that look like certificate problems but are not:</p>
+
+<table>
+  <thead>
+    <tr><th>Code</th><th>What actually happened</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>ERR_TLS_HANDSHAKE_TIMEOUT</code></td><td>The server never completed the handshake — usually a firewall dropping packets, not a trust problem.</td></tr>
+    <tr><td><code>ECONNRESET</code> during TLS</td><td>The peer closed the connection. Often a proxy or an mTLS requirement the client did not satisfy.</td></tr>
+    <tr><td><code>EPROTO</code></td><td>Protocol or cipher mismatch: the server wants TLS 1.3 or a specific cipher the client disabled.</td></tr>
+  </tbody>
+</table>
+
+<!-- ADSENSE-SLOT -->
+
+<h2>Recipes</h2>
+
+<h3>npm cannot install from an internal registry</h3>
+<pre><code>NODE_EXTRA_CA_CERTS=/etc/ssl/certs/corp-root-ca.pem npm install</code></pre>
+
+<h3>An HTTPS client that talks to one internal host</h3>
+<pre><code>const https = require("node:https");
+const fs = require("node:fs");
+
+const agent = new https.Agent({
+  keepAlive: true,
+  ca: fs.readFileSync("/etc/ssl/certs/corp-root-ca.pem"),
+  // note: this REPLACES the bundled Mozilla roots
+});
+
+https.get("https://internal.example.com/health", { agent }, (res) =&gt; {
+  console.log(res.statusCode);
+  res.resume();
+});</code></pre>
+
+<h3>fetch() with a custom CA</h3>
+<pre><code>// undici / fetch use Node's TLS stack, so the environment variable is enough:
+NODE_EXTRA_CA_CERTS=/etc/ssl/certs/corp-root-ca.pem node app.js
+
+// or with an explicit dispatcher for one call:
+const { Agent, fetch } = require("undici");
+const dispatcher = new Agent({ connect: { ca: fs.readFileSync("corp-root-ca.pem") } });
+await fetch("https://internal.example.com/", { dispatcher });</code></pre>
+
+<h2>Never do this</h2>
+
+<pre><code>NODE_TLS_REJECT_UNAUTHORIZED=0 node server.js   // disables verification process-wide</code></pre>
+
+<p>This turns every certificate error into a success, for every HTTPS connection the process makes, including calls to third-party services. It also prints a warning to stderr, which is why it shows up in logs and disappears in production where nobody reads them. Use <code>NODE_EXTRA_CA_CERTS</code> instead — it is a one-line change and it keeps verification on.</p>
+
+<h2>Related</h2>
+<ul class="related">
+  <li><a href="openssl-verify-error-codes.html">OpenSSL verify error codes</a> — the numbering behind these codes</li>
+  <li><a href="self-signed-certificate-in-chain.html">Self-signed certificate in chain</a></li>
+  <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></li>
+</ul>
+
+<!-- AFFILIATE: node-tls-tooling -->
+
+<div class="pager">
+  <a href="openssl-verify-error-codes.html">&larr; OpenSSL verify codes</a>
+  <a href="python-certificate-verify-failed.html">Next: Python &rarr;</a>
+</div>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <h2>CertDecode</h2>
+    <p>An independent reference for TLS certificate troubleshooting. Every command and error code on this site was checked against upstream OpenSSL, curl, Node.js, pip and Git documentation.</p>
+    <ul>
+      <li><a href="index.html">Error lookup</a></li>
+      <li><a href="openssl-verify-error-codes.html">OpenSSL verify codes</a></li>
+      <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+      <li><a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs private CA</a></li>
+    </ul>
+    <p class="disclosure">CertDecode is not affiliated with the OpenSSL Project, curl, the Node.js Foundation, the Python Software Foundation, the Git project or Let's Encrypt. Site text and examples are original. Content is drafted with AI assistance and reviewed against the upstream sources cited on each page; commands are safe to run, and the verification-bypass flags we discuss are shown as what they are rather than as recommendations.</p>
+  </div>
+</footer>
+
+</body>
+</html>

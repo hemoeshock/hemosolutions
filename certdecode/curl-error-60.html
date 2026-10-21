@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>curl error 60 — SSL certificate problem, and the curl TLS exit codes</title>
+<meta name="description" content="curl exit code 60 explained with the full table of curl TLS exit codes, how to read curl -v output, and how to fix the failure with --cacert, --capath or CURL_CA_BUNDLE.">
+<link rel="canonical" href="https://certdecode.pages.dev/curl-error-60.html">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Cert<span>Decode</span></a>
+    <p class="tagline">TLS certificate verification errors, decoded — cause, diagnosis, fix.</p>
+  </div>
+</header>
+
+<nav class="site" aria-label="Sections">
+  <ul>
+    <li><a href="index.html">Error lookup</a></li>
+    <li><a href="self-signed-certificate-in-chain.html">Self-signed in chain</a></li>
+    <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></li>
+    <li><a href="openssl-verify-error-codes.html">OpenSSL codes</a></li>
+    <li><a href="node-js-tls-certificate-errors.html">Node.js</a></li>
+    <li><a href="python-certificate-verify-failed.html">Python</a></li>
+    <li><a href="curl-error-60.html" aria-current="page">curl</a></li>
+    <li><a href="git-ssl-certificate-problem.html">Git</a></li>
+    <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+    <li><a href="lets-encrypt-vs-private-ca.html">LE vs private CA</a></li>
+  </ul>
+</nav>
+
+<main id="main">
+
+<h1>curl exit code 60, and the rest of curl's TLS codes</h1>
+<p class="lede">curl's exit code 60 means "the peer's certificate or fingerprint failed verification" — and that is all it says. The useful detail is the text that follows in the error line, and curl's verbose output tells you exactly which CA file was consulted while it failed.</p>
+
+<h2>What curl tells you</h2>
+
+<pre><code>curl: (60) SSL certificate problem: unable to get local issuer certificate</code></pre>
+
+<p>The part in parentheses is the exit code; the part after the colon is OpenSSL's reason, in the same vocabulary as the <a href="openssl-verify-error-codes.html">verify codes page</a>.</p>
+
+<h2>The curl TLS exit codes</h2>
+
+<table>
+  <thead>
+    <tr><th>Code</th><th>curl constant</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>35</code></td><td><code>CURLE_SSL_CONNECT_ERROR</code></td><td>The TLS handshake failed. Not a certificate problem — look at protocol and cipher mismatches, or a firewall.</td></tr>
+    <tr><td><code>53</code></td><td><code>CURLE_SSL_ENGINE_NOTFOUND</code></td><td>The crypto engine (OpenSSL engine) could not be found.</td></tr>
+    <tr><td><code>54</code></td><td><code>CURLE_SSL_ENGINE_SETFAILED</code></td><td>The crypto engine could not be set.</td></tr>
+    <tr><td><code>58</code></td><td><code>CURLE_SSL_CERTPROBLEM</code></td><td>Problem with the <em>local</em> certificate — the client certificate you configured.</td></tr>
+    <tr><td><code>59</code></td><td><code>CURLE_SSL_CIPHER</code></td><td>A cipher could not be used.</td></tr>
+    <tr><td><code>60</code></td><td><code>CURLE_PEER_FAILED_VERIFICATION</code></td><td>The peer certificate or its fingerprint failed verification. Also aliased as <code>CURLE_SSL_CACERT</code> and <code>CURLE_SSL_PEER_CERTIFICATE</code>.</td></tr>
+    <tr><td><code>64</code></td><td><code>CURLE_USE_SSL_FAILED</code></td><td>The requested FTP SSL level failed.</td></tr>
+    <tr><td><code>66</code></td><td><code>CURLE_SSL_ENGINE_INITFAILED</code></td><td>The crypto engine failed to initialise.</td></tr>
+    <tr><td><code>77</code></td><td><code>CURLE_SSL_CACERT_BADFILE</code></td><td>The CA cert file could not be loaded — wrong path, wrong format, or unreadable.</td></tr>
+    <tr><td><code>80</code></td><td><code>CURLE_SSL_SHUTDOWN_FAILED</code></td><td>The TLS shutdown did not complete cleanly.</td></tr>
+    <tr><td><code>82</code></td><td><code>CURLE_SSL_CRL_BADFILE</code></td><td>The CRL file could not be loaded.</td></tr>
+    <tr><td><code>83</code></td><td><code>CURLE_SSL_ISSUER_ERROR</code></td><td>The issuer check failed — added in curl 7.81.0 for stricter issuer validation.</td></tr>
+    <tr><td><code>90</code></td><td><code>CURLE_SSL_PINNEDPUBKEYNOTMATCH</code></td><td>The pinned public key did not match the one presented.</td></tr>
+    <tr><td><code>91</code></td><td><code>CURLE_SSL_INVALIDCERTSTATUS</code></td><td>The certificate status (OCSP stapling) was invalid.</td></tr>
+    <tr><td><code>98</code></td><td><code>CURLE_SSL_CLIENTCERT</code></td><td>The server requires a client certificate and none was accepted.</td></tr>
+  </tbody>
+</table>
+
+<p>Note the distinction between 35 and 60. <strong>60 means the handshake got far enough to fetch a certificate and then rejected it</strong>; 35 means the handshake never produced a usable certificate at all.</p>
+
+<h2>Read the verbose output</h2>
+
+<pre><code>curl -v https://example.com/ 2&gt;&amp;1 | grep -E "CAfile|CApath|subject|issuer|SSL certificate problem|server cert|expire date|start date"</code></pre>
+
+<p>Without the grep, a failing request looks roughly like this:</p>
+
+<pre><code>*   Trying 93.184.216.34:443...
+* Connected to example.com (93.184.216.34) port 443
+* ALPN: curl offers h2,http/1.1
+* successfully loaded certificate /etc/ssl/certs/ca-certificates.crt
+* CAfile: /etc/ssl/certs/ca-certificates.crt
+CApath: none
+* TLSv1.3 (OUT), TLS handshake, Client hello (1):
+* TLSv1.3 (IN), TLS handshake, Server hello (2):
+* SSL certificate problem: unable to get local issuer certificate
+curl: (60) SSL certificate problem: unable to get local issuer certificate</code></pre>
+
+<p>Three lines do all the work:</p>
+<ul>
+  <li><strong><code>CAfile:</code></strong> — the bundle curl is verifying against. If it points somewhere you do not recognise, curl is using a different trust store than you expect.</li>
+  <li><strong><code>CApath:</code></strong> — a directory of hashed certificates, used when <code>--capath</code> is in play. <code>none</code> means only the file above is consulted.</li>
+  <li><strong><code>SSL certificate problem: …</code></strong> — the actual reason.</li>
+</ul>
+
+<p>When the connection succeeds, the same output also shows the server's certificate:</p>
+
+<pre><code>* Server certificate:
+*  subject: CN=example.com
+*  issuer: CN=R11
+*  start date: Jan  1 00:00:00 2026 GMT
+*  expire date: Apr  1 23:59:59 2026 GMT
+*  SSL certificate verify ok.</code></pre>
+
+<h2>Fixing it</h2>
+
+<h3>Point curl at the right CA bundle</h3>
+
+<pre><code># a CA file
+curl --cacert ./corp-root-ca.pem https://internal.example.com/
+
+# a directory of hashed CA files
+curl --capath /etc/ssl/certs https://internal.example.com/
+
+# for the whole session
+export CURL_CA_BUNDLE=/etc/ssl/certs/corp-root-ca.pem</code></pre>
+
+<p>Note that <code>--cacert</code> replaces the default bundle rather than adding to it — the same rule as Node's <code>ca</code> option. If you still need to reach public sites in the same shell, build a combined bundle:</p>
+
+<pre><code>cat /etc/ssl/certs/ca-certificates.crt corp-root-ca.pem &gt; combined.pem
+curl --cacert combined.pem https://internal.example.com/</code></pre>
+
+<h3>Windows builds of curl</h3>
+
+<p>The curl shipped in Windows 10 and later uses Schannel, which reads the Windows certificate store — so a corporate root installed there is already trusted. Two Schannel-specific wrinkles:</p>
+
+<ul>
+  <li>Revocation checking in Schannel is often broken for corporate CAs, producing certificate errors that OpenSSL would not report. <code>--ssl-no-revoke</code> disables revocation checking for that request.</li>
+  <li><code>--ssl-revoke-best-effort</code> is the softer version: it ignores revocation failures but still checks when it can.</li>
+</ul>
+
+<p>Check which backend your curl uses:</p>
+
+<pre><code>curl -V</code></pre>
+
+<p>The <code>Features</code> line lists <code>Schannel</code>, <code>OpenSSL</code> or <code>LibreSSL</code> — and the <code>Release-Date</code>/SSL backend line tells you which trust store applies.</p>
+
+<h3>Debugging one request</h3>
+
+<p>To see whether the certificate itself is acceptable, bypass verification for a single call and read the certificate details:</p>
+
+<pre><code>curl -k -v https://internal.example.com/ 2&gt;&amp; | grep -E "subject|issuer|expire date"</code></pre>
+
+<p><code>-k</code> is <code>--insecure</code>. It applies to that one request, which makes it a reasonable debugging tool and an unreasonable configuration. If you keep it, at least keep it visible in the script that uses it.</p>
+
+<h3>Testing a specific IP with the right SNI</h3>
+
+<pre><code>curl --resolve example.com:443:203.0.113.10 https://example.com/</code></pre>
+
+<p>This connects to the given IP while still sending <code>example.com</code> as SNI and as the name to verify. It is the fastest way to test whether a problem is DNS or the certificate.</p>
+
+<h2>Getting the CA certificate from a server</h2>
+
+<p>For a quick test of a server that uses a CA you do not have, fetch the chain and use it as the bundle:</p>
+
+<pre><code>openssl s_client -connect example.com:443 -servername example.com -showcerts &lt;/dev/null \
+  | awk '/BEGIN CERTIFICATE/{n++} n{print &gt; ("cert-" n ".pem")}'
+
+curl --cacert cert-2.pem https://example.com/</code></pre>
+
+<p>This is a diagnostic, not a deployment strategy: you are trusting whatever the server just handed you. Do it to confirm a hypothesis, then get the real CA certificate from whoever runs the server.</p>
+
+<!-- ADSENSE-SLOT -->
+
+<h2>curl in a script</h2>
+
+<p>Two rules that keep certificate failures loud instead of silent:</p>
+
+<pre><code># 1. never let a script continue past a TLS failure
+curl --fail-with-body --retry 2 --cacert /etc/ssl/certs/combined.pem "$url"
+
+# 2. check the exit code explicitly when the body is empty
+if ! curl -sS --cacert /etc/ssl/certs/combined.pem -o out.json "$url"; then
+  echo "request failed (curl exit $?)" &gt;&amp;2
+  exit 1
+fi</code></pre>
+
+<p>Without <code>--fail-with-body</code> curl still exits 0 for HTTP error statuses; without <code>-sS</code> the error message is easy to lose in a log. With <code>-sS</code>, curl's error text goes to stderr and remains visible while stdout stays clean for the response body.</p>
+
+<h2>Related</h2>
+<ul class="related">
+  <li><a href="git-ssl-certificate-problem.html">Git over HTTPS</a> — Git uses libcurl, but manages its own CA configuration</li>
+  <li><a href="openssl-verify-error-codes.html">OpenSSL verify error codes</a></li>
+  <li><a href="openssl-inspect-certificate.html">Inspecting a certificate with openssl</a></li>
+</ul>
+
+<!-- AFFILIATE: tls-debugging-tooling -->
+
+<div class="pager">
+  <a href="python-certificate-verify-failed.html">&larr; Python</a>
+  <a href="git-ssl-certificate-problem.html">Next: Git over HTTPS &rarr;</a>
+</div>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <h2>CertDecode</h2>
+    <p>An independent reference for TLS certificate troubleshooting. Every command and error code on this site was checked against upstream OpenSSL, curl, Node.js, pip and Git documentation.</p>
+    <ul>
+      <li><a href="index.html">Error lookup</a></li>
+      <li><a href="openssl-verify-error-codes.html">OpenSSL verify codes</a></li>
+      <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+      <li><a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs private CA</a></li>
+    </ul>
+    <p class="disclosure">CertDecode is not affiliated with the OpenSSL Project, curl, the Node.js Foundation, the Python Software Foundation, the Git project or Let's Encrypt. Site text and examples are original. Content is drafted with AI assistance and reviewed against the upstream sources cited on each page; commands are safe to run, and the verification-bypass flags we discuss are shown as what they are rather than as recommendations.</p>
+  </div>
+</footer>
+
+</body>
+</html>

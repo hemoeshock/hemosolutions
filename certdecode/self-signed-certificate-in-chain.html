@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>self signed certificate in certificate chain — cause and fix</title>
+<meta name="description" content="What 'self signed certificate in certificate chain' means, how it differs from DEPTH_ZERO_SELF_SIGNED_CERT, how to diagnose it, and the correct per-tool fix for Node.js, curl, Python, Git and Go without disabling verification.">
+<link rel="canonical" href="https://certdecode.pages.dev/self-signed-certificate-in-chain.html">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Cert<span>Decode</span></a>
+    <p class="tagline">TLS certificate verification errors, decoded — cause, diagnosis, fix.</p>
+  </div>
+</header>
+
+<nav class="site" aria-label="Sections">
+  <ul>
+    <li><a href="index.html">Error lookup</a></li>
+    <li><a href="self-signed-certificate-in-chain.html" aria-current="page">Self-signed in chain</a></li>
+    <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></li>
+    <li><a href="openssl-verify-error-codes.html">OpenSSL codes</a></li>
+    <li><a href="node-js-tls-certificate-errors.html">Node.js</a></li>
+    <li><a href="python-certificate-verify-failed.html">Python</a></li>
+    <li><a href="curl-error-60.html">curl</a></li>
+    <li><a href="git-ssl-certificate-problem.html">Git</a></li>
+    <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+    <li><a href="lets-encrypt-vs-private-ca.html">LE vs private CA</a></li>
+  </ul>
+</nav>
+
+<main id="main">
+
+<h1><span class="error-string">self signed certificate in certificate chain</span></h1>
+<p class="lede">The server sent you a chain that ends in a self-signed certificate, and you do not trust that certificate. The fix is not to stop verifying — it is to decide <em>who should trust that CA</em>, and then make that happen in one specific place.</p>
+
+<h2>What the message really means</h2>
+
+<p>TLS verification is a chain-building exercise. The server presents its leaf certificate and, usually, the intermediates. The client walks up that chain until it reaches a certificate it already trusts — the anchor. Two OpenSSL codes produce almost identical wording, and telling them apart tells you what to fix:</p>
+
+<table>
+  <thead>
+    <tr><th>OpenSSL code</th><th>Meaning</th><th>What it tells you</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>18</code> — <span class="error-string">DEPTH_ZERO_SELF_SIGNED_CERT</span></td>
+      <td>The leaf certificate itself is self-signed. There is no issuer above it at all.</td>
+      <td>Nobody signed this certificate. Only a self-signed anchor can be trusted directly, and this one is not in your store.</td>
+    </tr>
+    <tr>
+      <td><code>19</code> — <span class="error-string">SELF_SIGNED_CERT_IN_CHAIN</span></td>
+      <td>The chain contains a self-signed CA certificate, but that CA is not trusted by your client.</td>
+      <td>The chain is well-formed. You just need the CA to be trusted, or the server to send a different chain.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The wording "self signed certificate in certificate chain" is the <em>depth-zero</em> case too in some OpenSSL versions, which is why people read it as "the server sent a self-signed cert". Check the number in the error line rather than guessing from the prose: <code>error:18 at 0 depth lookup</code> and <code>error:19 at 0 depth lookup</code> need different fixes.</p>
+
+<h2>Where you see it</h2>
+
+<table>
+  <thead>
+    <tr><th>Client</th><th>Message</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>curl</td><td><span class="error-string">curl: (60) SSL certificate problem: self signed certificate in certificate chain</span></td></tr>
+    <tr><td>Git</td><td><span class="error-string">fatal: unable to access 'https://…': SSL certificate problem: self signed certificate in certificate chain</span></td></tr>
+    <tr><td>Node.js</td><td><span class="error-string">Error: self signed certificate in certificate chain</span> with <code>code: 'DEPTH_ZERO_SELF_SIGNED_CERT'</code> or <code>code: 'SELF_SIGNED_CERT_IN_CHAIN'</code></td></tr>
+    <tr><td>Python (requests)</td><td><span class="error-string">SSLError: CERTIFICATE_VERIFY_FAILED</span> wrapping <span class="error-string">self signed certificate</span></td></tr>
+    <tr><td>Go</td><td><span class="error-string">x509: certificate signed by unknown authority</span></td></tr>
+    <tr><td>Java</td><td><span class="error-string">PKIX path building failed: unable to find valid certification path to requested target</span></td></tr>
+  </tbody>
+</table>
+
+<h2>Diagnose it in one command</h2>
+
+<pre><code>openssl s_client -connect example.com:443 -servername example.com -showcerts &lt;/dev/null</code></pre>
+
+<p>Read the chain top to bottom. For each certificate, print its subject and issuer:</p>
+
+<pre><code>openssl s_client -connect example.com:443 -servername example.com -showcerts &lt;/dev/null \
+  | awk '/BEGIN CERTIFICATE/{n++} n{print &gt; ("cert-" n ".pem")}'
+
+for f in cert-*.pem; do
+  echo "== $f"
+  openssl x509 -in "$f" -noout -subject -issuer
+done</code></pre>
+
+<p>The first file (<code>cert-1.pem</code>) is the leaf; each following one is an issuer. The last one in the chain is either a root you should already trust, or the self-signed CA that is causing the error.</p>
+
+<p>Three outcomes:</p>
+<ul>
+  <li>You get <strong>one</strong> certificate whose subject equals its issuer, and it is not in your trust store → the depth-zero case. The certificate was never issued by anyone you know.</li>
+  <li>You get a leaf plus a self-signed CA at the end, and that CA is not in your trust store → the "in chain" case. Add that CA to the store.</li>
+  <li>The chain ends at a <em>public</em> root you do recognise → you have a different problem: something is rewriting the chain. See <a href="unable-to-get-local-issuer-certificate.html">unable to get local issuer certificate</a>.</li>
+</ul>
+
+<h2>The four real situations, and the fix for each</h2>
+
+<h3>1. A developer machine talking to a local dev server</h3>
+<p>The normal cause. Your colleague ran <code>openssl req -x509</code> or a container generated a throwaway certificate. The right answer is a <em>local certificate authority</em>: generate one root, issue every dev certificate from it, and install the root into the trust store of the machines that need it. <code>mkcert</code> automates exactly this and handles Firefox separately from the OS store.</p>
+<p>Do not hand out the root of a production CA for this, and do not disable verification to make it work.</p>
+
+<h3>2. A corporate TLS-inspecting proxy</h3>
+<p>Your network terminates TLS with its own certificate, signed by an internal root CA. That root is not in your store, so every client that does not have it reports a self-signed or unknown-authority error — for <em>every</em> host, not just one.</p>
+<p>The fix is to install the organisation's root CA into the operating system trust store (usually distributed by IT) and into the trust stores of tools that do not use the OS store, such as Node.js and Go. If you cannot get the root, no application-level setting will make the connection work.</p>
+
+<h3>3. An internal service with a private CA</h3>
+<p>Your own CA issues certificates for <code>service.namespace.svc</code> and friends. Clients must trust your root. Options, in rough order of preference:</p>
+<ul>
+  <li>Distribute the root through your platform's trust management (systemd trust store, container image build, base image, MDM). One source of truth, no per-tool configuration.</li>
+  <li>Point individual tools at a CA bundle file when you cannot change the platform.</li>
+  <li>Use SPIFFE/SVID or mTLS with your own verifier if the consumer is under your control — you can verify against your own root explicitly instead of changing global trust.</li>
+</ul>
+
+<h3>4. A public website</h3>
+<p>A self-signed certificate on a public name is simply wrong. Issue it from a public CA instead — see <a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs a private CA</a> for how to pick and automate one.</p>
+
+<h2>Per-tool fixes</h2>
+
+<p>Each of these makes the client trust <em>one additional</em> certificate authority. None of them disables verification.</p>
+
+<h3>curl</h3>
+<pre><code># a single CA file
+curl --cacert ./corp-root-ca.pem https://internal.example.com/
+
+# a directory of hashed CA files (what OpenSSL's CApath expects)
+curl --capath /etc/ssl/certs https://internal.example.com/
+
+# for the whole session
+export CURL_CA_BUNDLE=/etc/ssl/certs/corp-root-ca.pem</code></pre>
+
+<h3>Node.js</h3>
+<pre><code># adds a CA to the bundled Mozilla store, for the whole process
+NODE_EXTRA_CA_CERTS=./corp-root-ca.pem node server.js</code></pre>
+
+<p>In code, the <code>ca</code> option of <code>https.request</code> / <code>tls.connect</code> <em>replaces</em> the default Mozilla bundle rather than adding to it. If you pass <code>ca</code>, include the public roots too if you still need to reach the public internet from that process. <a href="node-js-tls-certificate-errors.html">More on Node.js specifics</a>.</p>
+
+<h3>Python (requests)</h3>
+<pre><code>import requests
+requests.get("https://internal.example.com/", verify="./corp-root-ca.pem")
+
+# or for a whole session:
+# export REQUESTS_CA_BUNDLE=./corp-root-ca.pem</code></pre>
+
+<h3>pip</h3>
+<pre><code>pip install --cert ./corp-root-ca.pem some-package
+# or: export PIP_CERT=./corp-root-ca.pem</code></pre>
+
+<h3>Git</h3>
+<pre><code>git config --global http.sslCAInfo ./corp-root-ca.pem
+# one-off, without changing config:
+git -c http.sslCAInfo=./corp-root-ca.pem clone https://internal.example.com/repo.git</code></pre>
+
+<h3>Go</h3>
+<pre><code>export SSL_CERT_FILE=/path/to/corp-root-ca.pem   # replaces the bundle file
+export SSL_CERT_DIR=/path/to/hashed-ca-dir        # or adds a CApath</code></pre>
+
+<p>Go on macOS and Windows verifies through the platform verifier and the system certificate store, so <code>SSL_CERT_FILE</code> has no effect there — install the CA into the operating system store instead. On Linux, <code>SSL_CERT_FILE</code> replaces the bundle entirely, so point it at a concatenated bundle rather than a single CA.</p>
+
+<h3>Docker daemon (image and registry pulls)</h3>
+<pre><code>sudo mkdir -p /etc/docker/certs.d/registry.example.com:443
+sudo cp corp-root-ca.pem /etc/docker/certs.d/registry.example.com:443/ca.crt
+sudo systemctl restart docker</code></pre>
+
+<!-- ADSENSE-SLOT -->
+
+<h2>Why "just disable verification" is worse than the error</h2>
+
+<p>Disabling verification does not make the certificate valid — it makes the client stop asking. From that moment on, anything that can intercept your traffic can present any certificate it likes and you will connect to it happily. With verification on, the failure is loud and harmless; with verification off, the failure is silent and total.</p>
+
+<p>If you must bypass verification for a single debugging step, keep it to one command with an explicit flag, and never promote it to configuration.</p>
+
+<div class="callout">
+  <p><strong>Checklist before you close this out.</strong></p>
+  <ol>
+    <li>The chain you inspected is the chain the server really sends (see the <code>s_client -showcerts</code> output above).</li>
+    <li>You identified the CA that signs the leaf, and you know whether it is a public root, a corporate root or your own.</li>
+    <li>You added exactly that CA — not "the whole bundle from a colleague's laptop".</li>
+    <li>You added it in the trust store the failing tool actually reads.</li>
+    <li>No verification-disabling flag was left behind.</li>
+  </ol>
+</div>
+
+<h2>Related</h2>
+<ul class="related">
+  <li><a href="unable-to-get-local-issuer-certificate.html">unable to get local issuer certificate</a> — the same family, different code</li>
+  <li><a href="openssl-verify-error-codes.html">OpenSSL verify error codes</a> — codes 18, 19 and 20 side by side</li>
+  <li><a href="openssl-inspect-certificate.html">Inspecting a certificate with openssl</a></li>
+  <li><a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs a private CA</a></li>
+</ul>
+
+<!-- AFFILIATE: private-pki-tooling -->
+
+<div class="pager">
+  <a href="index.html">&larr; Error lookup</a>
+  <a href="unable-to-get-local-issuer-certificate.html">Next: no local issuer &rarr;</a>
+</div>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <h2>CertDecode</h2>
+    <p>An independent reference for TLS certificate troubleshooting. Every command and error code on this site was checked against upstream OpenSSL, curl, Node.js, pip and Git documentation.</p>
+    <ul>
+      <li><a href="index.html">Error lookup</a></li>
+      <li><a href="openssl-verify-error-codes.html">OpenSSL verify codes</a></li>
+      <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+      <li><a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs private CA</a></li>
+    </ul>
+    <p class="disclosure">CertDecode is not affiliated with the OpenSSL Project, curl, the Node.js Foundation, the Python Software Foundation, the Git project or Let's Encrypt. Site text and examples are original. Content is drafted with AI assistance and reviewed against the upstream sources cited on each page; commands are safe to run, and the verification-bypass flags we discuss are shown as what they are rather than as recommendations.</p>
+  </div>
+</footer>
+
+</body>
+</html>

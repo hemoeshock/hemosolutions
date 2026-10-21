@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Git SSL certificate problem — http.sslCAInfo and the backend split</title>
+<meta name="description" content="Fix 'SSL certificate problem' in Git over HTTPS: http.sslCAInfo, GIT_SSL_CAINFO, the openssl and schannel backends, one-off git -c overrides, and how to see the underlying curl error.">
+<link rel="canonical" href="https://certdecode.pages.dev/git-ssl-certificate-problem.html">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Cert<span>Decode</span></a>
+    <p class="tagline">TLS certificate verification errors, decoded — cause, diagnosis, fix.</p>
+  </div>
+</header>
+
+<nav class="site" aria-label="Sections">
+  <ul>
+    <li><a href="index.html">Error lookup</a></li>
+    <li><a href="self-signed-certificate-in-chain.html">Self-signed in chain</a></li>
+    <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></li>
+    <li><a href="openssl-verify-error-codes.html">OpenSSL codes</a></li>
+    <li><a href="node-js-tls-certificate-errors.html">Node.js</a></li>
+    <li><a href="python-certificate-verify-failed.html">Python</a></li>
+    <li><a href="curl-error-60.html">curl</a></li>
+    <li><a href="git-ssl-certificate-problem.html" aria-current="page">Git</a></li>
+    <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+    <li><a href="lets-encrypt-vs-private-ca.html">LE vs private CA</a></li>
+  </ul>
+</nav>
+
+<main id="main">
+
+<h1>Git's <span class="error-string">SSL certificate problem</span></h1>
+<p class="lede">Git talks HTTPS through libcurl, so the underlying failure is the same one curl reports — but Git decides <em>which</em> CA bundle to use, and that decision depends on which TLS backend your build was compiled against. On Windows that difference is the whole problem.</p>
+
+<h2>The error</h2>
+
+<pre><code>fatal: unable to access 'https://git.example.com/team/repo.git/': SSL certificate problem: unable to get local issuer certificate</code></pre>
+
+<p>Everything after <span class="error-string">SSL certificate problem:</span> is OpenSSL's reason, using the same vocabulary as the <a href="openssl-verify-error-codes.html">verify codes page</a>.</p>
+
+<h2>The four settings that matter</h2>
+
+<table>
+  <thead>
+    <tr><th>Setting</th><th>Environment variable</th><th>What it does</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>http.sslCAInfo</code></td>
+      <td><code>GIT_SSL_CAINFO</code></td>
+      <td>File containing the certificates to verify the peer with when fetching or pushing over HTTPS.</td>
+    </tr>
+    <tr>
+      <td><code>http.sslCAPath</code></td>
+      <td><code>GIT_SSL_CAPATH</code></td>
+      <td>Directory containing hashed CA certificate files to verify the peer with.</td>
+    </tr>
+    <tr>
+      <td><code>http.sslVerify</code></td>
+      <td><code>GIT_SSL_NO_VERIFY</code></td>
+      <td>Whether to verify the server's certificate. Leave it <code>true</code>; see the warning below.</td>
+    </tr>
+    <tr>
+      <td><code>http.sslBackend</code></td>
+      <td><code>GIT_SSL_BACKEND</code></td>
+      <td>The TLS implementation to use: <code>openssl</code>, <code>schannel</code>, or <code>secure-transport</code>, depending on what the build supports.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Git also supports <code>http.sslCert</code> (<code>GIT_SSL_CERT</code>) and <code>http.sslKey</code> (<code>GIT_SSL_KEY</code>) for client certificates, and <code>http.schannelUseSSLCAInfo</code> for the Windows backend — see below.</p>
+
+<h2>The backend split: why Windows behaves differently</h2>
+
+<p>Git for Windows is built with <strong>Schannel</strong>, the Windows TLS stack, which reads the <strong>Windows certificate store</strong>. Git for macOS is built with <strong>SecureTransport</strong>, which reads the macOS keychain. A Git built against OpenSSL reads whatever bundle the underlying libcurl is configured with — on Linux, usually the system bundle.</p>
+
+<p>The practical consequence:</p>
+
+<table>
+  <thead>
+    <tr><th>Platform</th><th>Corporate root installed in the OS store</th><th>Root only in a PEM file</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Windows (Schannel)</td><td>Works out of the box.</td><td>Needs <code>http.sslCAInfo</code> plus <code>http.schannelUseSSLCAInfo</code>.</td></tr>
+    <tr><td>macOS (SecureTransport)</td><td>Works out of the box.</td><td>Needs the root in the keychain, or a different backend.</td></tr>
+    <tr><td>Linux (OpenSSL)</td><td>Only if the OS bundle includes it.</td><td>Needs <code>http.sslCAInfo</code>.</td></tr>
+  </tbody>
+</table>
+
+<p>That last column is the one that surprises people: on Windows, pointing Git at a CA file with <code>http.sslCAInfo</code> does nothing unless you also allow the Schannel backend to use that bundle, because by default Git tells curl not to use it — using it would override the Windows certificate store. The switch is <code>http.schannelUseSSLCAInfo</code>.</p>
+
+<pre><code>git config --global http.sslCAInfo /path/to/corp-root-ca.pem
+git config --global http.schannelUseSSLCAInfo true   # Windows only</code></pre>
+
+<p>Check which backend your Git actually uses, and where the setting came from:</p>
+
+<pre><code>git config --show-origin --get http.sslBackend
+git config --list --show-origin | grep -i ssl</code></pre>
+
+<h2>Fixing it</h2>
+
+<h3>One-off, without touching your config</h3>
+
+<pre><code>git -c http.sslCAInfo=/path/to/corp-root-ca.pem clone https://git.example.com/team/repo.git</code></pre>
+
+<p>This is the right first move: it proves the CA file is the fix before you make it permanent for every repository.</p>
+
+<h3>For every repository</h3>
+
+<pre><code>git config --global http.sslCAInfo /path/to/corp-root-ca.pem</code></pre>
+
+<p><code>--global</code> applies to all repositories for the current user; <code>--system</code> applies to all users on the machine; <code>--local</code> (the default) applies to one repository. Use <code>--global</code> for a corporate root, and prefer distributing it with your configuration management tool rather than asking people to run a command.</p>
+
+<h3>With an environment variable instead</h3>
+
+<pre><code>export GIT_SSL_CAINFO=/path/to/corp-root-ca.pem
+git clone https://git.example.com/team/repo.git</code></pre>
+
+<p>Useful in CI jobs and containers, where writing to a user's global Git config is awkward. In a Dockerfile:</p>
+
+<pre><code>ENV GIT_SSL_CAINFO=/usr/local/share/ca-certificates/corp-root-ca.crt</code></pre>
+
+<h3>Corporate proxy (the most common case)</h3>
+
+<p>If your network inspects TLS, Git needs the proxy's root CA — and every other tool in the pipeline needs it too. On Linux and macOS, install it in the operating system store so that Git, curl, Node.js and your build tools all agree:</p>
+
+<pre><code>sudo cp corp-root-ca.pem /usr/local/share/ca-certificates/corp-root-ca.crt
+sudo update-ca-certificates</code></pre>
+
+<p>Then confirm the proxy is actually in the path:</p>
+
+<pre><code>env | grep -i proxy
+git config --get http.proxy
+git config --global --get http.proxy</code></pre>
+
+<p>A proxy that Git is not using and a proxy that Git is using but that has no certificate in the trust store both produce the same error message.</p>
+
+<h2>Seeing the real error</h2>
+
+<p>Git's message is a summary. To get curl's full output:</p>
+
+<pre><code>GIT_CURL_VERBOSE=1 git clone https://git.example.com/team/repo.git</code></pre>
+
+<p>You will see the CA bundle Git chose, the certificate the server presented, and the exact OpenSSL reason. For even more:</p>
+
+<pre><code>GIT_TRACE=1 GIT_TRACE_CURL=1 GIT_TRACE_PACKET=1 git clone https://git.example.com/team/repo.git</code></pre>
+
+<p>Those variables are for diagnosis only — <code>GIT_TRACE_CURL</code> prints credentials-relevant detail, so do not paste its output into a public issue or a shared log.</p>
+
+<h2>Other Git TLS settings you may need</h2>
+
+<table>
+  <thead>
+    <tr><th>Setting</th><th>Use it when</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>http.sslVersion</code></td><td>The server requires a specific TLS version (for example <code>tlsv1.2</code>). Modern defaults are fine almost always; change this last.</td></tr>
+    <tr><td><code>http.sslCert</code> / <code>http.sslKey</code></td><td>The server requires a client certificate (mTLS).</td></tr>
+    <tr><td><code>http.sslCertPasswordProtected</code></td><td>Your client key is encrypted and you want Git to prompt for the passphrase.</td></tr>
+    <tr><td><code>http.extraHeader</code></td><td>Not a TLS setting, but it is how you pass an authorisation header for a private Git server.</td></tr>
+  </tbody>
+</table>
+
+<h2>Git LFS</h2>
+
+<p>Git LFS uses Git's own HTTP stack, so it inherits the same CA configuration — but a successful <code>git clone</code> with a failing LFS download usually means the LFS endpoint is a different host with a different certificate. Check what LFS is configured to use:</p>
+
+<pre><code>git lfs env
+git config --get lfs.url</code></pre>
+
+<p>Add the CA for that host too, and remember that a proxy intercepting <code>github.com</code> may not intercept <code>githubusercontent.com</code> the same way.</p>
+
+<!-- ADSENSE-SLOT -->
+
+<h2>What not to do</h2>
+
+<pre><code>git config --global http.sslVerify false
+# or
+export GIT_SSL_NO_VERIFY=true</code></pre>
+
+<p>This disables verification for every repository you ever clone or push to, permanently and globally, for a problem that usually has a one-line fix. If you are forced to use it for a single emergency operation, scope it to that command with <code>git -c http.sslVerify=false …</code> and write down why.</p>
+
+<h2>Checklist</h2>
+
+<ol>
+  <li><code>GIT_CURL_VERBOSE=1</code> — read the real reason and the CA bundle Git used.</li>
+  <li><code>git config --list --show-origin | grep -i ssl</code> — see which settings are already in play and where they came from.</li>
+  <li>Identify the backend: Schannel on Windows, SecureTransport on macOS, OpenSSL on Linux.</li>
+  <li>Add the CA to the store that backend reads.</li>
+  <li>Verify with a one-off <code>git -c http.sslCAInfo=…</code> before making it global.</li>
+</ol>
+
+<h2>Related</h2>
+<ul class="related">
+  <li><a href="curl-error-60.html">curl exit code 60</a> — the underlying libcurl failure</li>
+  <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer certificate</a></li>
+  <li><a href="openssl-verify-error-codes.html">OpenSSL verify error codes</a></li>
+</ul>
+
+<!-- AFFILIATE: developer-workstation-tooling -->
+
+<div class="pager">
+  <a href="curl-error-60.html">&larr; curl</a>
+  <a href="openssl-inspect-certificate.html">Next: the openssl cheatsheet &rarr;</a>
+</div>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <h2>CertDecode</h2>
+    <p>An independent reference for TLS certificate troubleshooting. Every command and error code on this site was checked against upstream OpenSSL, curl, Node.js, pip and Git documentation.</p>
+    <ul>
+      <li><a href="index.html">Error lookup</a></li>
+      <li><a href="openssl-verify-error-codes.html">OpenSSL verify codes</a></li>
+      <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+      <li><a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs private CA</a></li>
+    </ul>
+    <p class="disclosure">CertDecode is not affiliated with the OpenSSL Project, curl, the Node.js Foundation, the Python Software Foundation, the Git project or Let's Encrypt. Site text and examples are original. Content is drafted with AI assistance and reviewed against the upstream sources cited on each page; commands are safe to run, and the verification-bypass flags we discuss are shown as what they are rather than as recommendations.</p>
+  </div>
+</footer>
+
+</body>
+</html>

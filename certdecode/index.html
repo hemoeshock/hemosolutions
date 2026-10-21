@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TLS certificate errors, decoded — lookup table for 9 common verification failures</title>
+<meta name="description" content="A plain-English lookup for TLS certificate verification errors: self-signed chain, unable to get local issuer certificate, OpenSSL verify codes, curl exit 60, Node.js, Python and Git — with the correct fix for each.">
+<link rel="canonical" href="https://certdecode.pages.dev/index.html">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Cert<span>Decode</span></a>
+    <p class="tagline">TLS certificate verification errors, decoded — cause, diagnosis, fix.</p>
+  </div>
+</header>
+
+<nav class="site" aria-label="Sections">
+  <ul>
+    <li><a href="index.html" aria-current="page">Error lookup</a></li>
+    <li><a href="self-signed-certificate-in-chain.html">Self-signed in chain</a></li>
+    <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></li>
+    <li><a href="openssl-verify-error-codes.html">OpenSSL codes</a></li>
+    <li><a href="node-js-tls-certificate-errors.html">Node.js</a></li>
+    <li><a href="python-certificate-verify-failed.html">Python</a></li>
+    <li><a href="curl-error-60.html">curl</a></li>
+    <li><a href="git-ssl-certificate-problem.html">Git</a></li>
+    <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+    <li><a href="lets-encrypt-vs-private-ca.html">LE vs private CA</a></li>
+  </ul>
+</nav>
+
+<main id="main">
+
+<h1>TLS certificate verification errors, decoded</h1>
+<p class="lede">Every "certificate verify failed" message is the same three questions asked badly: <em>is this certificate valid</em>, <em>does its name match</em>, and <em>can I build a chain to a CA I trust</em>? This site takes the error strings that curl, Git, OpenSSL, Node.js, Python and browsers actually print, and maps each one to the real cause and the fix that works in production.</p>
+<p class="meta">10 reference pages &middot; examples verified against upstream OpenSSL, curl, Node.js, pip and Git documentation &middot; no affiliate-driven "quick fixes"</p>
+
+<div class="toc">
+  <p>On this page</p>
+  <ul>
+    <li><a href="#lookup">Start here: match your error string</a></li>
+    <li><a href="#three-questions">The three questions behind every failure</a></li>
+    <li><a href="#chain">How a chain gets trusted</a></li>
+    <li><a href="#tools">By tool</a></li>
+    <li><a href="#avoid">What not to do</a></li>
+    <li><a href="#glossary">Glossary</a></li>
+  </ul>
+</div>
+
+<h2 id="lookup">Start here: match your error string</h2>
+
+<table>
+  <caption class="meta">Copy the message your tool printed and read across.</caption>
+  <thead>
+    <tr><th>Error text you see</th><th>What it actually means</th><th>Read</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="error-string">self signed certificate in certificate chain</span></td>
+      <td>The chain ends at a self-signed CA that your client does not trust (or the server sent you a self-signed leaf).</td>
+      <td><a href="self-signed-certificate-in-chain.html">Self-signed in chain</a></td>
+    </tr>
+    <tr>
+      <td><span class="error-string">unable to get local issuer certificate</span></td>
+      <td>Your trust store has no certificate for the issuer named in the chain — usually a missing intermediate, or a TLS-inspecting proxy.</td>
+      <td><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></td>
+    </tr>
+    <tr>
+      <td><span class="error-string">certificate verify failed</span> (OpenSSL&nbsp;3)</td>
+      <td>A generic wrapper. The useful part is the numeric code: <span class="error-string">error:1416F086</span> or the <span class="error-string">error NN at D depth</span> line.</td>
+      <td><a href="openssl-verify-error-codes.html">OpenSSL verify codes</a></td>
+    </tr>
+    <tr>
+      <td><span class="error-string">CERTIFICATE_VERIFY_FAILED</span> (Python)</td>
+      <td>requests/urllib3 could not build a trusted path. The underlying reason is in the exception chain.</td>
+      <td><a href="python-certificate-verify-failed.html">Python</a></td>
+    </tr>
+    <tr>
+      <td><span class="error-string">SSL certificate problem: …</span> + exit code&nbsp;60 (curl)</td>
+      <td>curl could not verify the peer certificate. The text after the colon is the OpenSSL reason.</td>
+      <td><a href="curl-error-60.html">curl exit 60</a></td>
+    </tr>
+    <tr>
+      <td><span class="error-string">SSL certificate problem: …</span> (git)</td>
+      <td>Git's libcurl hit the same wall; Git decides which CA bundle to use.</td>
+      <td><a href="git-ssl-certificate-problem.html">Git</a></td>
+    </tr>
+    <tr>
+      <td><span class="error-string">UNABLE_TO_VERIFY_LEAF_SIGNATURE</span>, <span class="error-string">DEPTH_ZERO_SELF_SIGNED_CERT</span> (Node.js)</td>
+      <td>Node.js reports OpenSSL verification failures as <code>code</code> properties on the error object.</td>
+      <td><a href="node-js-tls-certificate-errors.html">Node.js</a></td>
+    </tr>
+    <tr>
+      <td><span class="error-string">x509: certificate signed by unknown authority</span> (Go, kubectl, Docker)</td>
+      <td>Go keeps its own root list (the system CA files on Linux, the platform store on macOS/Windows) and does not read whatever the browser trusts.</td>
+      <td><a href="unable-to-get-local-issuer-certificate.html#go">No local issuer &rarr; Go</a></td>
+    </tr>
+    <tr>
+      <td><span class="error-string">Hostname/IP does not match certificate's altnames</span></td>
+      <td>The name you connected to is not in the certificate's Subject Alternative Name list. Trust is irrelevant here.</td>
+      <td><a href="openssl-verify-error-codes.html#names">OpenSSL codes &rarr; name errors</a></td>
+    </tr>
+    <tr>
+      <td><span class="error-string">certificate has expired</span> / <span class="error-string">not yet valid</span></td>
+      <td>A date problem, not a trust problem. Fix the certificate or the clock.</td>
+      <td><a href="openssl-verify-error-codes.html#dates">OpenSSL codes &rarr; date errors</a></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ADSENSE-SLOT -->
+
+<h2 id="three-questions">The three questions behind every failure</h2>
+
+<p>Before you change a setting, work through these in order. Each question has one root cause family, and the fixes in the wrong order usually make things worse.</p>
+
+<ol>
+  <li><strong>Is the certificate in its validity window?</strong>
+    <p>Compare <code>notBefore</code> and <code>notAfter</code> against the current time. A certificate that is "not yet valid" usually means clock skew on the client, a certificate staged too early, or a device with a dead CMOS battery. An expired certificate is a server-side renewal failure — fix the renewal, not the client.</p>
+  </li>
+  <li><strong>Does the name you used appear in the certificate?</strong>
+    <p>Modern clients ignore the Common Name and check the Subject Alternative Name list only. <code>https://10.0.0.5/</code> connecting to a certificate issued for <code>api.example.com</code> fails here even when the certificate is perfectly valid and trusted. This is a <em>name</em> failure, and adding a CA will never fix it.</p>
+  </li>
+  <li><strong>Can you build a chain up to a CA in your trust store?</strong>
+    <p>The server sends its leaf certificate and any intermediates. The root is normally <em>not</em> sent — the client is expected to have it already. Chain building fails when an intermediate is missing from the server's response, when the client uses a different trust store than you expect, or when a middlebox replaced the certificate with one signed by an internal CA.</p>
+  </li>
+</ol>
+
+<div class="callout">
+  <p><strong>The single most useful diagnostic.</strong> It shows what the server actually sent, in order, with the issuer of each certificate:</p>
+<pre><code>openssl s_client -connect example.com:443 -servername example.com -showcerts &lt;/dev/null</code></pre>
+  <p>If the chain you get back is shorter than the chain the server should send, the server is misconfigured — not your client.</p>
+</div>
+
+<h2 id="chain">How a chain gets trusted</h2>
+
+<p>A public TLS certificate is signed up a tree: your leaf certificate is signed by an intermediate, and the intermediate is signed by a root. Your operating system ships the roots; the server ships the leaf and intermediates. Verification walks from the leaf up until it reaches a root it already trusts.</p>
+
+<pre><code>leaf (example.com)          &lt;- signed by
+  intermediate (R3)        &lt;- signed by
+    root (ISRG Root X1)    &lt;- pre-installed in your OS / trust store</code></pre>
+
+<p>Two consequences explain most of the errors on this site:</p>
+<ul>
+  <li>If the server forgets to send the intermediate, the client holds a leaf signed by an issuer it has never heard of — <span class="error-string">unable to get local issuer certificate</span>. The chain is incomplete; the CA is fine.</li>
+  <li>If something in the middle (a corporate proxy, a service mesh sidecar, a WAF) terminates TLS with <em>its own</em> certificate, the issuer is an internal CA your trust store has never seen. The certificate may be perfectly valid — for the proxy's name.</li>
+</ul>
+
+<h2 id="tools">By tool</h2>
+
+<div class="grid">
+  <div class="card">
+    <h3><a href="openssl-verify-error-codes.html">OpenSSL verify codes</a></h3>
+    <p>The numeric <code>error NN at D depth</code> codes are the root vocabulary every other tool borrows. Decode them once and the rest of the errors become obvious.</p>
+  </div>
+  <div class="card">
+    <h3><a href="self-signed-certificate-in-chain.html">Self-signed in chain</a></h3>
+    <p>Why a self-signed certificate breaks <em>everyone</em> except the machine that trusts it, and how to add a CA properly instead of switching verification off.</p>
+  </div>
+  <div class="card">
+    <h3><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></h3>
+    <p>Missing intermediate or an intercepting proxy. Fix it on the server that omits the chain, or install the CA on the client that needs it.</p>
+  </div>
+  <div class="card">
+    <h3><a href="node-js-tls-certificate-errors.html">Node.js</a></h3>
+    <p><code>NODE_EXTRA_CA_CERTS</code>, the <code>ca</code> option that <em>replaces</em> the Mozilla bundle, and the altname mismatch that no CA setting can fix.</p>
+  </div>
+  <div class="card">
+    <h3><a href="python-certificate-verify-failed.html">Python</a></h3>
+    <p>requests, urllib3 and pip each have their own knob. <code>verify=False</code> is a debugging switch, not a fix.</p>
+  </div>
+  <div class="card">
+    <h3><a href="curl-error-60.html">curl exit 60</a></h3>
+    <p>The curl exit-code table for TLS, what <code>--cacert</code> really does, and how to read the CA path from <code>curl -v</code>.</p>
+  </div>
+  <div class="card">
+    <h3><a href="git-ssl-certificate-problem.html">Git over HTTPS</a></h3>
+    <p><code>http.sslCAInfo</code>, the Windows schannel/openssl backend split, and the one-off <code>git -c</code> override.</p>
+  </div>
+  <div class="card">
+    <h3><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></h3>
+    <p>Every command you need to look at a certificate: what the server sent, who signed it, when it expires, whether the key matches.</p>
+  </div>
+  <div class="card">
+    <h3><a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs private CA</a></h3>
+    <p>Which PKI to run for which name, the rate limits that will bite you, and how renewal automation should work.</p>
+  </div>
+</div>
+
+<!-- ADSENSE-SLOT -->
+
+<h2 id="avoid">What not to do</h2>
+
+<p>Every one of these turns a verification failure into a silent security hole. They are fine for five minutes of debugging on a laptop; they are not a configuration to ship.</p>
+
+<table>
+  <thead>
+    <tr><th>Tempting shortcut</th><th>What it really does</th><th>Do this instead</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>curl -k</code></td><td>Disables peer verification entirely — any MITM can present any certificate.</td><td>Add the CA with <code>--cacert</code>; keep <code>-k</code> for the one failing request.</td></tr>
+    <tr><td><code>requests.get(url, verify=False)</code></td><td>Same, plus a <code>urllib3</code> warning on every call.</td><td>Pass a CA bundle: <code>verify="/path/ca.pem"</code>.</td></tr>
+    <tr><td><code>NODE_TLS_REJECT_UNAUTHORIZED=0</code></td><td>Node accepts any certificate, for the whole process, including every other HTTPS call it makes.</td><td>Set <code>NODE_EXTRA_CA_CERTS</code> to the CA you actually trust.</td></tr>
+    <tr><td><code>git config --global http.sslVerify false</code></td><td>Disables verification for every repository you clone, permanently.</td><td>Set <code>http.sslCAInfo</code> for the one CA you need.</td></tr>
+    <tr><td><code>pip install --trusted-host …</code></td><td>Trusts a host whose TLS may be entirely broken.</td><td>Pass <code>--cert /path/ca.pem</code>.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="glossary">Glossary</h2>
+
+<dl>
+  <dt><strong>Leaf / end-entity certificate</strong></dt>
+  <dd>The certificate that holds the public key for one hostname. The only one a client actually needs to match against the name it asked for.</dd>
+
+  <dt><strong>Intermediate</strong></dt>
+  <dd>A CA certificate that signs other CA certificates. It is part of the chain but not part of the trust decision — the client only needs it to walk upwards.</dd>
+
+  <dt><strong>Root</strong></dt>
+  <dd>The self-signed anchor at the top of a hierarchy. It is trusted because it was installed into the trust store, not because the server sent it.</dd>
+
+  <dt><strong>Trust store / CA bundle</strong></dt>
+  <dd>The set of anchors a client will accept. Different tools read different files: <code>/etc/ssl/certs/ca-certificates.crt</code> on most Linux systems, the Windows certificate store, <code>certifi</code> in Python, Node's bundled Mozilla store. This mismatch is the root of many "it works on my machine" failures.</dd>
+
+  <dt><strong>SAN (Subject Alternative Name)</strong></dt>
+  <dd>The list of names a certificate is valid for. Since 2017 the Common Name is ignored by most clients; if the SAN list does not contain the name you typed, the connection fails.</dd>
+
+  <dt><strong>Chain depth</strong></dt>
+  <dd>How many certificates sit between the leaf and the root. OpenSSL reports the depth in its error messages (<code>at 0 depth</code> means the leaf itself is the problem).</dd>
+</dl>
+
+<!-- AFFILIATE: certificate-and-tls-tooling -->
+
+<div class="pager">
+  <a href="self-signed-certificate-in-chain.html">&larr; Next: self-signed certificate in chain</a>
+</div>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <h2>CertDecode</h2>
+    <p>An independent reference for TLS certificate troubleshooting. Every command and error code on this site was checked against upstream OpenSSL, curl, Node.js, pip and Git documentation.</p>
+    <ul>
+      <li><a href="index.html">Error lookup</a></li>
+      <li><a href="openssl-verify-error-codes.html">OpenSSL verify codes</a></li>
+      <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+      <li><a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs private CA</a></li>
+    </ul>
+    <p class="disclosure">CertDecode is not affiliated with the OpenSSL Project, curl, the Node.js Foundation, the Python Software Foundation, the Git project or Let's Encrypt. Site text and examples are original. Content is drafted with AI assistance and reviewed against the upstream sources cited on each page; commands are safe to run, and the verification-bypass flags we discuss are shown as what they are rather than as recommendations.</p>
+  </div>
+</footer>
+
+</body>
+</html>

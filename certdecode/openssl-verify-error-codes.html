@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenSSL verify error codes — X509_V_ERR numbers decoded</title>
+<meta name="description" content="The OpenSSL X509_V_ERR codes behind 'certificate verify failed': what each number means, what causes it, and the fix. Includes how to read the error line and how browsers map the same failures.">
+<link rel="canonical" href="https://certdecode.pages.dev/openssl-verify-error-codes.html">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Cert<span>Decode</span></a>
+    <p class="tagline">TLS certificate verification errors, decoded — cause, diagnosis, fix.</p>
+  </div>
+</header>
+
+<nav class="site" aria-label="Sections">
+  <ul>
+    <li><a href="index.html">Error lookup</a></li>
+    <li><a href="self-signed-certificate-in-chain.html">Self-signed in chain</a></li>
+    <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></li>
+    <li><a href="openssl-verify-error-codes.html" aria-current="page">OpenSSL codes</a></li>
+    <li><a href="node-js-tls-certificate-errors.html">Node.js</a></li>
+    <li><a href="python-certificate-verify-failed.html">Python</a></li>
+    <li><a href="curl-error-60.html">curl</a></li>
+    <li><a href="git-ssl-certificate-problem.html">Git</a></li>
+    <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+    <li><a href="lets-encrypt-vs-private-ca.html">LE vs private CA</a></li>
+  </ul>
+</nav>
+
+<main id="main">
+
+<h1>OpenSSL verify error codes, decoded</h1>
+<p class="lede">Almost every TLS client on the planet — curl, Git, Node.js, Python's <code>ssl</code> module, Java, Go's <code>crypto/x509</code> — ultimately asks OpenSSL the same question. OpenSSL answers with a number. Learn the handful of numbers that matter and the rest of this site becomes a lookup table.</p>
+
+<h2>How to read the error</h2>
+
+<pre><code>error:20 at 0 depth lookup: unable to get local issuer certificate</code></pre>
+
+<table>
+  <thead>
+    <tr><th>Part</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>20</code></td><td>The <code>X509_V_ERR_*</code> code. This is the part that identifies the problem; the text after the colon is a human-readable rendering of the same code.</td></tr>
+    <tr><td><code>at 0 depth</code></td><td>Where in the chain the failure happened. <strong>Depth 0 is the leaf</strong> — the certificate for the host you asked for. Depth 1 is the intermediate, and so on.</td></tr>
+    <tr><td><code>lookup</code></td><td>The operation that failed: chain building. Other phases report differently (<code>check certificate</code>, <code>verify error</code>).</td></tr>
+  </tbody>
+</table>
+
+<p>A failure at depth 0 usually means the leaf itself is the problem. A failure at depth 1 or 2 with <code>certificate has expired</code> points at an expired intermediate — the leaf may be perfectly current while its issuer has lapsed.</p>
+
+<p>OpenSSL 3.x also prints a TLS-layer error string that looks scarier than it is:</p>
+
+<pre><code>error:1416F086:SSL routines:tls_process_server_certificate:certificate verify failed
+error:0A000086:SSL routines::certificate verify failed</code></pre>
+
+<p>That is the wrapper, not the reason. The hex payload (<code>0A000086</code>, <code>1416F086</code>) is an internal reason code, and the useful detail is the verify error that follows it in the output — or the one you get from running <code>openssl verify</code> yourself.</p>
+
+<h2>Get the reason on demand</h2>
+
+<pre><code>openssl s_client -connect example.com:443 -servername example.com \
+  -verify_return_error -verify 5 &lt;/dev/null</code></pre>
+
+<p><code>-verify_return_error</code> makes the handshake fail on a verification error instead of continuing, and <code>-verify 5</code> sets the maximum chain depth. To check a chain you already have on disk:</p>
+
+<pre><code>openssl verify -CAfile root.pem -untrusted chain.pem leaf.pem
+openssl verify -verify_hostname example.com -CAfile root.pem leaf.pem</code></pre>
+
+<p><code>openssl verify</code> prints the same <code>error NN at D depth</code> line, plus the file name, so you can iterate on a chain locally without touching the network.</p>
+
+<h2>Chain and trust errors</h2>
+
+<table>
+  <thead>
+    <tr><th>Code</th><th>Name</th><th>What happened</th><th>Fix</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>18</code></td>
+      <td><code>DEPTH_ZERO_SELF_SIGNED_CERT</code></td>
+      <td>The leaf is self-signed. Nobody vouches for it.</td>
+      <td>Issue it from a real CA, or trust the CA that issued it. <a href="self-signed-certificate-in-chain.html">Details</a>.</td>
+    </tr>
+    <tr>
+      <td><code>19</code></td>
+      <td><code>SELF_SIGNED_CERT_IN_CHAIN</code></td>
+      <td>The chain contains a self-signed CA that you do not trust.</td>
+      <td>Add that CA to the trust store, or serve a different chain. <a href="self-signed-certificate-in-chain.html">Details</a>.</td>
+    </tr>
+    <tr>
+      <td><code>20</code></td>
+      <td><code>UNABLE_TO_GET_ISSUER_CERT_LOCALLY</code></td>
+      <td>No certificate found for the issuer named in the chain — a missing intermediate, or a CA missing from your store.</td>
+      <td>Server sends the full chain, or client installs the CA. <a href="unable-to-get-local-issuer-certificate.html">Details</a>.</td>
+    </tr>
+    <tr>
+      <td><code>21</code></td>
+      <td><code>UNABLE_TO_VERIFY_LEAF_SIGNATURE</code></td>
+      <td>Only one certificate was supplied and it is not self-signed, so there is nothing to verify the signature against.</td>
+      <td>Supply the intermediate (usually the server's fault). Node surfaces this as <code>UNABLE_TO_VERIFY_LEAF_SIGNATURE</code>.</td>
+    </tr>
+    <tr>
+      <td><code>2</code></td>
+      <td><code>UNABLE_TO_GET_ISSUER_CERT</code></td>
+      <td>The issuer could not be fetched (a CRL or auxiliary fetch failed).</td>
+      <td>Usually transient; retry, then check the chain file.</td>
+    </tr>
+    <tr>
+      <td><code>37</code></td>
+      <td><code>INVALID_NON_CA</code></td>
+      <td>A certificate was used as a CA but its basic constraints say it is not one.</td>
+      <td>Use a proper CA certificate, not a leaf, to sign other certificates.</td>
+    </tr>
+    <tr>
+      <td><code>27</code></td>
+      <td><code>CERT_UNTRUSTED</code></td>
+      <td>The certificate is explicitly untrusted in the trust store.</td>
+      <td>Remove the block entry, or get a valid certificate.</td>
+    </tr>
+    <tr>
+      <td><code>23</code></td>
+      <td><code>CERT_REVOKED</code></td>
+      <td>The certificate has been revoked.</td>
+      <td>Replace it. Revocation is not a misconfiguration.</td>
+    </tr>
+    <tr>
+      <td><code>22</code></td>
+      <td><code>CERT_CHAIN_TOO_LONG</code></td>
+      <td>The chain exceeds the configured maximum depth.</td>
+      <td>Shorten the chain; the server is sending certificates the client does not need.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="dates">Date and validity errors</h2>
+
+<table>
+  <thead>
+    <tr><th>Code</th><th>Name</th><th>What happened</th><th>Fix</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>10</code></td>
+      <td><code>CERT_HAS_EXPIRED</code></td>
+      <td>The certificate's <code>notAfter</code> is in the past.</td>
+      <td>Renew it. If it renews and still fails, the client is caching the old certificate — check your intermediate cache.</td>
+    </tr>
+    <tr>
+      <td><code>9</code></td>
+      <td><code>CERT_NOT_YET_VALID</code></td>
+      <td>The certificate's <code>notBefore</code> is in the future.</td>
+      <td>Usually clock skew on the client. Compare <code>date -u</code> with the server's clock, and fix NTP.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Two date problems are worth separating. An expired leaf is a renewal failure and always shows at depth 0. An expired <em>intermediate</em> shows at depth 1 or 2 and is much easier to miss: the leaf dates look fine, the site looks fine in most browsers, and only clients that rebuild the chain from scratch fail.</p>
+
+<p>If a certificate claims to be valid but your client says it is not yet valid, check the clock before you touch the certificate:</p>
+
+<pre><code>date -u
+openssl x509 -in cert.pem -noout -dates</code></pre>
+
+<h2 id="names">Name mismatch errors</h2>
+
+<table>
+  <thead>
+    <tr><th>Code</th><th>Name</th><th>What happened</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>62</code></td>
+      <td><code>HOSTNAME_MISMATCH</code></td>
+      <td>The hostname you connected to is not in the certificate's SAN list.</td>
+    </tr>
+    <tr>
+      <td><code>63</code></td>
+      <td><code>EMAIL_MISMATCH</code></td>
+      <td>Same check, for an email address in a certificate.</td>
+    </tr>
+    <tr>
+      <td><code>64</code></td>
+      <td><code>IP_ADDRESS_MISMATCH</code></td>
+      <td>You connected to an IP address and the certificate does not contain a matching <code>iPAddress</code> SAN.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Modern clients check the Subject Alternative Name list and ignore the Common Name. Three practical consequences:</p>
+<ul>
+  <li>A certificate with the right CN but no SAN is rejected. Adding a SAN to the certificate fixes it.</li>
+  <li>Connecting to an IP address needs an <code>iPAddress</code> SAN; a <code>DNS:</code> entry for the same IP does not count.</li>
+  <li>A wildcard covers exactly one label: <code>*.example.com</code> matches <code>api.example.com</code> but not <code>a.b.example.com</code> and not <code>example.com</code>.</li>
+</ul>
+
+<p>These errors are about <em>identity</em>, not trust. Installing another CA will not help — only a certificate with the right name will.</p>
+
+<h2>Policy and constraint errors</h2>
+
+<table>
+  <thead>
+    <tr><th>Code</th><th>Name</th><th>What happened</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>25</code></td><td><code>PATH_LENGTH_EXCEEDED</code></td><td>A CA in the chain has issued more sub-certificates than its basic constraints allow.</td></tr>
+    <tr><td><code>34</code></td><td><code>UNHANDLED_CRITICAL_EXTENSION</code></td><td>The certificate has a critical extension the client does not understand.</td></tr>
+    <tr><td><code>47</code> / <code>48</code></td><td><code>PERMITTED_VIOLATION</code> / <code>EXCLUDED_VIOLATION</code></td><td>Name constraints on an intermediate excluded the name you asked for.</td></tr>
+    <tr><td><code>32</code></td><td><code>KEYUSAGE_NO_CERTSIGN</code></td><td>A certificate was used to sign another certificate but is not allowed to.</td></tr>
+  </tbody>
+</table>
+
+<p>These are rarer than the trust errors, and they usually indicate a genuine mistake in how a private CA issued something rather than a client misconfiguration.</p>
+
+<h2>The same failures, in other tools' language</h2>
+
+<table>
+  <thead>
+    <tr><th>OpenSSL code</th><th>Node.js <code>error.code</code></th><th>Browser</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>18</code></td>
+      <td><code>DEPTH_ZERO_SELF_SIGNED_CERT</code></td>
+      <td>Chrome: <code>ERR_CERT_AUTHORITY_INVALID</code>. Firefox: <code>SEC_ERROR_UNKNOWN_ISSUER</code>.</td>
+    </tr>
+    <tr>
+      <td><code>19</code></td>
+      <td><code>SELF_SIGNED_CERT_IN_CHAIN</code></td>
+      <td>Same browser codes as above.</td>
+    </tr>
+    <tr>
+      <td><code>20</code></td>
+      <td><code>UNABLE_TO_GET_ISSUER_CERT_LOCALLY</code></td>
+      <td>Chrome: <code>ERR_CERT_AUTHORITY_INVALID</code>. Firefox: <code>SEC_ERROR_UNKNOWN_ISSUER</code>.</td>
+    </tr>
+    <tr>
+      <td><code>21</code></td>
+      <td><code>UNABLE_TO_VERIFY_LEAF_SIGNATURE</code></td>
+      <td>Chrome: <code>ERR_CERT_AUTHORITY_INVALID</code>.</td>
+    </tr>
+    <tr>
+      <td><code>10</code></td>
+      <td>certificate expired</td>
+      <td>Chrome: <code>ERR_CERT_DATE_INVALID</code>. Firefox: <code>SEC_ERROR_EXPIRED_CERTIFICATE</code>.</td>
+    </tr>
+    <tr>
+      <td><code>62</code></td>
+      <td><code>ERR_TLS_CERT_ALTNAME_INVALID</code></td>
+      <td>Chrome: <code>ERR_CERT_COMMON_NAME_INVALID</code>. Firefox: <code>SEC_ERROR_UNKNOWN_ISSUER</code> or a generic mismatch warning.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Chrome in particular collapses most trust failures into <code>ERR_CERT_AUTHORITY_INVALID</code>, so the browser alone will not tell you which of codes 18, 19, 20 or 21 you are looking at. Reproduce it with <code>openssl s_client</code> or <code>curl -v</code> to get the precise reason.</p>
+
+<!-- ADSENSE-SLOT -->
+
+<!-- AFFILIATE: certificate-verification-tooling -->
+
+<h2>Quick decision table</h2>
+
+<table>
+  <thead>
+    <tr><th>If the error says</th><th>Go to</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>error 18 at 0 depth</code></td><td><a href="self-signed-certificate-in-chain.html">Self-signed leaf</a> — issue it properly or trust the CA.</td></tr>
+    <tr><td><code>error 19 at 0 depth</code></td><td><a href="self-signed-certificate-in-chain.html">Self-signed CA in the chain</a> — add that CA to your store.</td></tr>
+    <tr><td><code>error 20 at 0 depth</code></td><td><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a> — incomplete chain or missing CA.</td></tr>
+    <tr><td><code>error 21 at 0 depth</code></td><td><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a> — the server sent only the leaf.</td></tr>
+    <tr><td><code>error 10 at 0 depth</code></td><td>Expired leaf — fix renewal.</td></tr>
+    <tr><td><code>error 10 at 1 depth</code></td><td>Expired intermediate — replace the intermediate, keep the leaf.</td></tr>
+    <tr><td><code>error 9 at 0 depth</code></td><td>Clock skew or a certificate deployed too early.</td></tr>
+    <tr><td><code>error 62</code></td><td>Hostname mismatch — add the SAN to the certificate.</td></tr>
+  </tbody>
+</table>
+
+<h2>Related</h2>
+<ul class="related">
+  <li><a href="openssl-inspect-certificate.html">The openssl command cheatsheet</a> — how to look at the certificate the server sent</li>
+  <li><a href="curl-error-60.html">curl exit code 60</a></li>
+  <li><a href="node-js-tls-certificate-errors.html">Node.js error codes</a></li>
+</ul>
+
+<div class="pager">
+  <a href="unable-to-get-local-issuer-certificate.html">&larr; No local issuer</a>
+  <a href="node-js-tls-certificate-errors.html">Next: Node.js &rarr;</a>
+</div>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <h2>CertDecode</h2>
+    <p>An independent reference for TLS certificate troubleshooting. Every command and error code on this site was checked against upstream OpenSSL, curl, Node.js, pip and Git documentation.</p>
+    <ul>
+      <li><a href="index.html">Error lookup</a></li>
+      <li><a href="openssl-verify-error-codes.html">OpenSSL verify codes</a></li>
+      <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+      <li><a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs private CA</a></li>
+    </ul>
+    <p class="disclosure">CertDecode is not affiliated with the OpenSSL Project, curl, the Node.js Foundation, the Python Software Foundation, the Git project or Let's Encrypt. Site text and examples are original. Content is drafted with AI assistance and reviewed against the upstream sources cited on each page; commands are safe to run, and the verification-bypass flags we discuss are shown as what they are rather than as recommendations.</p>
+  </div>
+</footer>
+
+</body>
+</html>

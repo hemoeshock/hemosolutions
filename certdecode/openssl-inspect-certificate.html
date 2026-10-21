@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The openssl certificate cheatsheet — inspect, verify, convert, match keys</title>
+<meta name="description" content="A practical openssl cheatsheet for certificates: what the server sent, subject and issuer, expiry, SANs, chain verification, DER and PEM conversion, and matching a certificate to its private key.">
+<link rel="canonical" href="https://certdecode.pages.dev/openssl-inspect-certificate.html">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Cert<span>Decode</span></a>
+    <p class="tagline">TLS certificate verification errors, decoded — cause, diagnosis, fix.</p>
+  </div>
+</header>
+
+<nav class="site" aria-label="Sections">
+  <ul>
+    <li><a href="index.html">Error lookup</a></li>
+    <li><a href="self-signed-certificate-in-chain.html">Self-signed in chain</a></li>
+    <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer</a></li>
+    <li><a href="openssl-verify-error-codes.html">OpenSSL codes</a></li>
+    <li><a href="node-js-tls-certificate-errors.html">Node.js</a></li>
+    <li><a href="python-certificate-verify-failed.html">Python</a></li>
+    <li><a href="curl-error-60.html">curl</a></li>
+    <li><a href="git-ssl-certificate-problem.html">Git</a></li>
+    <li><a href="openssl-inspect-certificate.html" aria-current="page">openssl cheatsheet</a></li>
+    <li><a href="lets-encrypt-vs-private-ca.html">LE vs private CA</a></li>
+  </ul>
+</nav>
+
+<main id="main">
+
+<h1>The openssl certificate cheatsheet</h1>
+<p class="lede">Everything you need to look at a certificate: what the server actually sent, who signed it, which names it covers, when it expires, whether the key on disk matches it, and why a chain fails to verify — without leaving the terminal.</p>
+
+<h2>1. See what the server sent</h2>
+
+<pre><code>openssl s_client -connect example.com:443 -servername example.com -showcerts &lt;/dev/null</code></pre>
+
+<table>
+  <thead>
+    <tr><th>Flag</th><th>Effect</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>-servername name</code></td><td>Sends SNI. Without it you may get the wrong certificate from a multi-tenant server.</td></tr>
+    <tr><td><code>-showcerts</code></td><td>Prints the whole chain the server sent.</td></tr>
+    <tr><td><code>-verify_return_error</code></td><td>Fails the handshake when verification fails, so you see the reason instead of a "successful" connection.</td></tr>
+    <tr><td><code>-verify N</code></td><td>Maximum chain depth (default 100 is generous; 5 is realistic).</td></tr>
+    <tr><td><code>-CAfile file</code></td><td>Verifies against your own bundle instead of the system store.</td></tr>
+    <tr><td><code>-tls1_2</code> / <code>-tls1_3</code></td><td>Forces a protocol version — useful when a legacy client is the problem.</td></tr>
+    <tr><td><code>-alpn h2,http/1.1</code></td><td>Advertises application protocols.</td></tr>
+  </tbody>
+</table>
+
+<p>The output ends with a verification summary:</p>
+
+<pre><code>Verify return code: 0 (ok)
+# or
+Verify return code: 20 (unable to get local issuer certificate)</code></pre>
+
+<p>That number is an <code>X509_V_ERR</code> code — look it up on the <a href="openssl-verify-error-codes.html">verify codes page</a>.</p>
+
+<h2>2. Split a chain into individual certificates</h2>
+
+<pre><code>openssl s_client -connect example.com:443 -servername example.com -showcerts &lt;/dev/null \
+  | awk '/BEGIN CERTIFICATE/{n++} n{print &gt; ("cert-" n ".pem")}'
+
+for f in cert-*.pem; do
+  echo "== $f"
+  openssl x509 -in "$f" -noout -subject -issuer
+done</code></pre>
+
+<p><code>cert-1.pem</code> is the leaf; later files are the intermediates.</p>
+
+<h2>3. Read a certificate</h2>
+
+<pre><code># the quick look
+openssl x509 -in cert.pem -noout -subject -issuer -dates -serial
+
+# everything
+openssl x509 -in cert.pem -noout -text
+
+# the names it covers
+openssl x509 -in cert.pem -noout -ext subjectAltName
+
+# one specific extension
+openssl x509 -in cert.pem -noout -ext basicConstraints
+openssl x509 -in cert.pem -noout -ext keyUsage
+openssl x509 -in cert.pem -noout -ext extendedKeyUsage
+
+# a fingerprint to compare against something else
+openssl x509 -in cert.pem -noout -fingerprint -sha256</code></pre>
+
+<table>
+  <thead>
+    <tr><th>Field</th><th>What to look at</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Subject</td><td>Common Name is legacy. Read the SAN list instead — that is what clients check.</td></tr>
+    <tr><td>Issuer</td><td>Who signed it. If this names a company you do not recognise, something intercepted your connection.</td></tr>
+    <tr><td>Not Before / Not After</td><td>The validity window. Also check the issuer's dates: an expired intermediate breaks an otherwise valid leaf.</td></tr>
+    <tr><td>Basic Constraints</td><td><code>CA:TRUE</code> means it can sign other certificates. If a certificate used as a CA says <code>CA:FALSE</code>, you will get <code>INVALID_NON_CA</code>.</td></tr>
+    <tr><td>Key Usage / Extended Key Usage</td><td>A leaf must carry <code>serverAuth</code> for HTTPS; a CA must carry <code>keyCertSign</code>.</td></tr>
+    <tr><td>Authority Information Access</td><td>The OCSP responder and the issuer certificate URL — how you fetch the missing intermediate.</td></tr>
+  </tbody>
+</table>
+
+<h2>4. Check expiry</h2>
+
+<pre><code># expiry date
+openssl x509 -in cert.pem -noout -enddate
+
+# will it expire in the next 30 days? (exit code 0 = yes)
+openssl x509 -in cert.pem -noout -checkend 2592000
+
+# will it have expired? (exit code 0 = still valid)
+openssl x509 -in cert.pem -noout -checkend 0</code></pre>
+
+<p><code>-checkend</code> takes a number of seconds. It is the one command worth putting in a monitoring check, because it also tells you about a certificate that is <em>not yet</em> valid — the <code>notBefore</code> in the future is a common surprise after a restore from backup.</p>
+
+<h2>5. Verify a chain</h2>
+
+<pre><code># leaf against a root
+openssl verify -CAfile root.pem leaf.pem
+
+# leaf against a root, with the intermediates supplied separately
+openssl verify -CAfile root.pem -untrusted chain.pem leaf.pem
+
+# also check the name
+openssl verify -verify_hostname example.com -CAfile root.pem leaf.pem
+
+# show the chain that was built
+openssl verify -show_chain -CAfile root.pem leaf.pem</code></pre>
+
+<p>A successful run prints <code>leaf.pem: OK</code>. A failure prints the code, the depth and the reason:</p>
+
+<pre><code>leaf.pem: error 20 at 0 depth lookup: unable to get local issuer certificate</code></pre>
+
+<p>For a live server, the same thing without files on disk:</p>
+
+<pre><code>openssl s_client -connect example.com:443 -servername example.com -verify_return_error &lt;/dev/null</code></pre>
+
+<h2>6. Convert between formats</h2>
+
+<pre><code># DER to PEM
+openssl x509 -inform DER -in cert.der -out cert.pem
+
+# PEM to DER
+openssl x509 -in cert.pem -outform DER -out cert.der
+
+# private key: traditional to PKCS#8
+openssl pkcs8 -topk8 -nocrypt -in key.pem -out key-pkcs8.pem
+
+# private key: PKCS#8 to traditional (OpenSSL 3.x)
+openssl rsa -traditional -in key-pkcs8.pem -out key-traditional.pem
+
+# protect a key with a passphrase
+openssl pkey -in key.pem -aes256 -out key-encrypted.pem
+
+# base64 for copy-paste into a config file
+base64 -w0 cert.der        # Linux
+base64 cert.der            # macOS: base64 &lt; cert.der | tr -d '\n'</code></pre>
+
+<p>To build a full chain file for a server, concatenate the leaf first and the intermediates after it:</p>
+
+<pre><code>cat cert.pem chain.pem &gt; fullchain.pem</code></pre>
+
+<p>Order matters: the leaf must come first, and the root should usually be left out.</p>
+
+<h2>7. Does this key match this certificate?</h2>
+
+<p>For RSA:</p>
+
+<pre><code>openssl x509 -noout -modulus -in cert.pem | openssl sha256
+openssl rsa  -noout -modulus -in key.pem  | openssl sha256</code></pre>
+
+<p>For EC and Ed25519 keys, compare the public keys:</p>
+
+<pre><code>openssl x509 -in cert.pem -pubkey -noout | openssl pkey -pubin -outform DER | openssl sha256
+openssl pkey -in key.pem -pubout -outform DER | openssl sha256</code></pre>
+
+<p>The two hashes must match. A mismatch is the classic cause of a server that serves a certificate the client rejects as "invalid", and of a TLS handshake that fails only after a certificate renewal.</p>
+
+<h2>8. Inspect the private key itself</h2>
+
+<pre><code># is it encrypted?
+head -1 key.pem
+# "-----BEGIN ENCRYPTED PRIVATE KEY-----" means yes
+
+# details (without printing the private material)
+openssl pkey -in key.pem -noout -text_pub | head -20
+
+# key size and algorithm
+openssl pkey -in key.pem -pubout | openssl pkey -pubin -text -noout | head -3</code></pre>
+
+<h2>9. Request and inspect a CSR</h2>
+
+<pre><code># create a key and CSR
+openssl req -new -newkey rsa:4096 -nodes \
+  -keyout server.key -out server.csr \
+  -subj "/CN=example.com"
+
+# what is in the CSR?
+openssl req -in server.csr -noout -text
+openssl req -in server.csr -noout -subject -verify</code></pre>
+
+<p>Self-sign it for testing:</p>
+
+<pre><code>openssl x509 -req -in server.csr -signkey server.key -out server.crt -days 30</code></pre>
+
+<p>Or sign it with a CA you control:</p>
+
+<pre><code>openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+  -out server.crt -days 365 -sha256</code></pre>
+
+<h2>10. Revocation status</h2>
+
+<pre><code># the OCSP responder URL from the certificate
+openssl x509 -in cert.pem -noout -ocsp_uri
+
+# ask the responder
+openssl ocsp -issuer issuer.pem -cert cert.pem -url &lt;ocsp-responder-url&gt; -noverify</code></pre>
+
+<p>OCSP tells you whether a certificate has been revoked. CRL is the older alternative:</p>
+
+<pre><code>openssl crl -in crl.pem -noout -text</code></pre>
+
+<p>Neither mechanism explains most "certificate verify failed" errors — those are trust and name problems, not revocation. But a revoked certificate (<code>CERT_REVOKED</code>, code 23) is worth checking when a certificate was working yesterday.</p>
+
+<h2>Quick reference</h2>
+
+<table>
+  <thead>
+    <tr><th>Task</th><th>Command</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>What does the server send?</td><td><code>openssl s_client -connect host:443 -servername host -showcerts &lt;/dev/null</code></td></tr>
+    <tr><td>Who signed it?</td><td><code>openssl x509 -in cert.pem -noout -issuer</code></td></tr>
+    <tr><td>Which names does it cover?</td><td><code>openssl x509 -in cert.pem -noout -ext subjectAltName</code></td></tr>
+    <tr><td>When does it expire?</td><td><code>openssl x509 -in cert.pem -noout -enddate</code></td></tr>
+    <tr><td>Expiring within 30 days?</td><td><code>openssl x509 -in cert.pem -noout -checkend 2592000</code></td></tr>
+    <tr><td>Does the key match?</td><td>compare <code>modulus</code> hashes (RSA) or public key hashes (EC)</td></tr>
+    <tr><td>Does the chain verify?</td><td><code>openssl verify -CAfile root.pem -untrusted chain.pem leaf.pem</code></td></tr>
+    <tr><td>Why did verification fail?</td><td>the <code>error NN at D depth</code> code — <a href="openssl-verify-error-codes.html">decode it</a></td></tr>
+  </tbody>
+</table>
+
+<!-- ADSENSE-SLOT -->
+
+<h2>Related</h2>
+<ul class="related">
+  <li><a href="openssl-verify-error-codes.html">OpenSSL verify error codes</a></li>
+  <li><a href="unable-to-get-local-issuer-certificate.html">No local issuer certificate</a></li>
+  <li><a href="self-signed-certificate-in-chain.html">Self-signed certificate in chain</a></li>
+</ul>
+
+<!-- AFFILIATE: certificate-management-tooling -->
+
+<div class="pager">
+  <a href="git-ssl-certificate-problem.html">&larr; Git over HTTPS</a>
+  <a href="lets-encrypt-vs-private-ca.html">Next: Let's Encrypt vs private CA &rarr;</a>
+</div>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <h2>CertDecode</h2>
+    <p>An independent reference for TLS certificate troubleshooting. Every command and error code on this site was checked against upstream OpenSSL, curl, Node.js, pip and Git documentation.</p>
+    <ul>
+      <li><a href="index.html">Error lookup</a></li>
+      <li><a href="openssl-verify-error-codes.html">OpenSSL verify codes</a></li>
+      <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+      <li><a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs private CA</a></li>
+    </ul>
+    <p class="disclosure">CertDecode is not affiliated with the OpenSSL Project, curl, the Node.js Foundation, the Python Software Foundation, the Git project or Let's Encrypt. Site text and examples are original. Content is drafted with AI assistance and reviewed against the upstream sources cited on each page; commands are safe to run, and the verification-bypass flags we discuss are shown as what they are rather than as recommendations.</p>
+  </div>
+</footer>
+
+</body>
+</html>

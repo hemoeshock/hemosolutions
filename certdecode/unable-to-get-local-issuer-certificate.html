@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>unable to get local issuer certificate — missing intermediate or intercepting proxy</title>
+<meta name="description" content="OpenSSL error 20 explained: how to tell a missing intermediate apart from a TLS-inspecting proxy, and the correct fix for curl, Git, Node.js, Python, Go, Docker and Java.">
+<link rel="canonical" href="https://certdecode.pages.dev/unable-to-get-local-issuer-certificate.html">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Cert<span>Decode</span></a>
+    <p class="tagline">TLS certificate verification errors, decoded — cause, diagnosis, fix.</p>
+  </div>
+</header>
+
+<nav class="site" aria-label="Sections">
+  <ul>
+    <li><a href="index.html">Error lookup</a></li>
+    <li><a href="self-signed-certificate-in-chain.html">Self-signed in chain</a></li>
+    <li><a href="unable-to-get-local-issuer-certificate.html" aria-current="page">No local issuer</a></li>
+    <li><a href="openssl-verify-error-codes.html">OpenSSL codes</a></li>
+    <li><a href="node-js-tls-certificate-errors.html">Node.js</a></li>
+    <li><a href="python-certificate-verify-failed.html">Python</a></li>
+    <li><a href="curl-error-60.html">curl</a></li>
+    <li><a href="git-ssl-certificate-problem.html">Git</a></li>
+    <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+    <li><a href="lets-encrypt-vs-private-ca.html">LE vs private CA</a></li>
+  </ul>
+</nav>
+
+<main id="main">
+
+<h1><span class="error-string">unable to get local issuer certificate</span></h1>
+<p class="lede">OpenSSL error 20 (<code>X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY</code>) means the client cannot find a certificate for the issuer named in the certificate it received. There are only two reasons: the server did not send the full chain, or the client does not have the CA — usually because something in the middle is intercepting your traffic.</p>
+
+<h2>Two causes, one symptom</h2>
+
+<table>
+  <thead>
+    <tr><th></th><th>Cause A: the server sent an incomplete chain</th><th>Cause B: the client does not have the CA</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>Who is wrong</th>
+      <td>The server. It is missing the intermediate certificate from its configuration.</td>
+      <td>The client (or the network). The CA is missing from the client's trust store.</td>
+    </tr>
+    <tr>
+      <th>Typical situation</th>
+      <td>You deployed a new certificate and the old one is still in use, or the server config points at <code>cert.pem</code> instead of <code>fullchain.pem</code>.</td>
+      <td>A corporate proxy inspects TLS; or the tool uses a different trust store than the OS; or the container image has no CA bundle installed.</td>
+    </tr>
+    <tr>
+      <th>Who else is affected</th>
+      <td>Every client, everywhere. Browsers fail too unless they cached the intermediate.</td>
+      <td>Usually only the tools that keep their own store (Node.js, Go, Python) or every tool on a machine missing the CA bundle.</td>
+    </tr>
+    <tr>
+      <th>Fix</th>
+      <td>Server side: send leaf + intermediates.</td>
+      <td>Client side: install the CA in the store that the failing tool reads.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Diagnose: count what the server actually sent</h2>
+
+<pre><code>openssl s_client -connect example.com:443 -servername example.com -showcerts &lt;/dev/null \
+  | grep -c "BEGIN CERTIFICATE"</code></pre>
+
+<p>For a normal public site you expect <strong>2</strong> or <strong>3</strong> certificates: the leaf, one or two intermediates, and occasionally the root. One certificate means the server sent only its leaf and expects you to already know the issuer — which nobody does. That is Cause A.</p>
+
+<p>Then look at the issuer of the leaf:</p>
+
+<pre><code>openssl s_client -connect example.com:443 -servername example.com &lt;/dev/null 2&gt;/dev/null \
+  | openssl x509 -noout -subject -issuer -ext subjectAltName</code></pre>
+
+<p>If the issuer is a well-known public CA but the chain is incomplete, it is Cause A. If the issuer is your company, a proxy vendor, or anything you do not recognise, it is Cause B.</p>
+
+<div class="callout">
+  <p><strong>Interception is easy to confirm.</strong> Check the issuer and the organisation in the certificate against what you expect. On a TLS-inspecting proxy the leaf certificate is issued to your hostname by the proxy's CA, and it usually names the proxy vendor. You will also find proxy variables in the environment:</p>
+<pre><code>env | grep -i proxy</code></pre>
+  <p>If <code>HTTPS_PROXY</code> is set, every HTTPS request from tools that honour it goes through that proxy.</p>
+</div>
+
+<h2>Fixing cause A: the server sent an incomplete chain</h2>
+
+<p>This is the one you can fix without touching a single client. The server must present the leaf <em>and</em> every intermediate up to (but not including) the root. With certbot and Let's Encrypt this is the difference between three files:</p>
+
+<table>
+  <thead>
+    <tr><th>File</th><th>Contents</th><th>Use for</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>cert.pem</code></td><td>Leaf only</td><td>Never serve this as the certificate file.</td></tr>
+    <tr><td><code>chain.pem</code></td><td>Intermediates only</td><td>Appended to the leaf by the server config.</td></tr>
+    <tr><td><code>fullchain.pem</code></td><td>Leaf + intermediates</td><td>The file the server should point at.</td></tr>
+  </tbody>
+</table>
+
+<p>nginx takes both paths and concatenates them:</p>
+
+<pre><code>ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
+ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;</code></pre>
+
+<p>Apache's <code>SSLCertificateFile</code> expects the same concatenation: <code>cat cert.pem chain.pem &gt; fullchain.pem</code>.</p>
+
+<p>After changing the certificate file, reload the server and re-run the count command above. If it still shows one certificate, the server is serving a cached or different file.</p>
+
+<h2>Fixing cause B: the client does not have the CA</h2>
+
+<p>Install the CA in the store the failing tool actually reads. This is the part people get wrong: the operating system trust store and the tool trust store are frequently different stores.</p>
+
+<table>
+  <thead>
+    <tr><th>Client</th><th>Where it looks for roots</th><th>How to add one</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>curl</td>
+      <td>Its own bundle path, or <code>CURL_CA_BUNDLE</code>, or <code>--cacert</code> / <code>--capath</code>.</td>
+      <td><code>curl --cacert ./ca.pem https://host</code></td>
+    </tr>
+    <tr>
+      <td>Git</td>
+      <td>Git's own CA file: <code>http.sslCAInfo</code>, <code>GIT_SSL_CAINFO</code>, or the system store.</td>
+      <td><code>git config --global http.sslCAInfo ./ca.pem</code></td>
+    </tr>
+    <tr>
+      <td>Node.js</td>
+      <td>Bundled Mozilla store, plus <code>NODE_EXTRA_CA_CERTS</code>.</td>
+      <td><code>NODE_EXTRA_CA_CERTS=./ca.pem node app.js</code></td>
+    </tr>
+    <tr>
+      <td>Python (requests)</td>
+      <td>certifi bundle (in a venv) or <code>REQUESTS_CA_BUNDLE</code> / <code>CURL_CA_BUNDLE</code>.</td>
+      <td><code>requests.get(url, verify="./ca.pem")</code></td>
+    </tr>
+    <tr>
+      <td>pip</td>
+      <td><code>PIP_CERT</code> or <code>--cert</code>.</td>
+      <td><code>pip install --cert ./ca.pem pkg</code></td>
+    </tr>
+    <tr id="go">
+      <td>Go</td>
+      <td>On Linux: <code>SSL_CERT_FILE</code> / <code>SSL_CERT_DIR</code>, or the distribution bundle (for example <code>/etc/ssl/certs/ca-certificates.crt</code>). On macOS and Windows: the platform verifier and the system store.</td>
+      <td>Linux: export <code>SSL_CERT_FILE=/path/bundle.pem</code>. macOS/Windows: install into the OS store.</td>
+    </tr>
+    <tr>
+      <td>Docker daemon</td>
+      <td>Per-registry files under <code>/etc/docker/certs.d/</code>, then the host CA bundle.</td>
+      <td><code>/etc/docker/certs.d/registry.example.com:443/ca.crt</code></td>
+    </tr>
+    <tr>
+      <td>Java</td>
+      <td>The JRE keystore <code>$JAVA_HOME/lib/security/cacerts</code>, or <code>javax.net.ssl.trustStore</code>.</td>
+      <td><code>keytool -importcert -alias corp -file ca.pem -keystore "$JAVA_HOME/lib/security/cacerts" -storepass changeit</code></td>
+    </tr>
+    <tr>
+      <td>Browsers</td>
+      <td>The operating system store (Chrome, Edge, Firefox on Linux) or their own store (Firefox).</td>
+      <td>Import the CA into the OS certificate manager; in Firefox also tick "Additional certificates and servers".</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Containers and CI runners</h3>
+
+<p>Distroless, Alpine and many minimal images ship without a CA bundle, so every HTTPS call inside them fails with this error even though the same call works on your laptop. Fix it in the image, not per command:</p>
+
+<pre><code># Debian/Ubuntu based
+RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends ca-certificates \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+COPY corp-root-ca.pem /usr/local/share/ca-certificates/corp-root-ca.crt
+RUN update-ca-certificates
+
+# Alpine
+RUN apk add --no-cache ca-certificates
+COPY corp-root-ca.pem /usr/local/share/ca-certificates/corp-root-ca.crt
+RUN update-ca-certificates</code></pre>
+
+<p>On Alpine, <code>update-ca-certificates</code> also needs <code>libc6-compat</code> in some base images; if the command fails silently, check that the <code>ca-certificates</code> package is actually installed before you rebuild.</p>
+
+<h3>Python virtualenvs specifically</h3>
+
+<p>A frequent pattern: the system Python works, a virtualenv does not. The reason is that a venv's <code>pip</code> and <code>requests</code> use the <code>certifi</code> bundle, not the OS store:</p>
+
+<pre><code>python -c "import certifi; print(certifi.where())"
+pip install --cert /path/ca-bundle.pem package
+export PIP_CERT=/path/ca-bundle.pem</code></pre>
+
+<p>If you want requests to use the system bundle instead, point it there:</p>
+
+<pre><code>export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt</code></pre>
+
+<h2>Verifying the chain by hand</h2>
+
+<p>When the chain is incomplete, you can still prove it by asking OpenSSL to verify with the intermediates you supply:</p>
+
+<pre><code># leaf and intermediates in one file (chain.pem), root separately
+openssl verify -CAfile root.pem -untrusted chain.pem leaf.pem</code></pre>
+
+<p>If that prints <code>leaf.pem: OK</code> while the client fails, the server is not sending <code>chain.pem</code>. If it still fails, the problem is the root or the dates, and the error line will tell you which.</p>
+
+<!-- ADSENSE-SLOT -->
+
+<h2>Checklist</h2>
+
+<ol>
+  <li>Count the certificates the server sends. One means an incomplete chain — fix the server.</li>
+  <li>Read the leaf's issuer. An unfamiliar issuer means interception or a private CA — fix the client.</li>
+  <li>Compare the issuer in the certificate with the issuer you would expect from DNS. A mismatch is a red flag worth escalating, not a config tweak.</li>
+  <li>Add the CA to the store the failing tool reads — not "the system store", unless the tool uses it.</li>
+  <li>Re-run the original command. If it still fails, read the next error code rather than repeating the same fix.</li>
+</ol>
+
+<h2>Related</h2>
+<ul class="related">
+  <li><a href="openssl-verify-error-codes.html">OpenSSL verify error codes</a> — the full numeric table</li>
+  <li><a href="self-signed-certificate-in-chain.html">self signed certificate in certificate chain</a></li>
+  <li><a href="openssl-inspect-certificate.html">Inspecting a certificate with openssl</a></li>
+  <li><a href="git-ssl-certificate-problem.html">Git over HTTPS</a></li>
+</ul>
+
+<!-- AFFILIATE: managed-certificate-service -->
+
+<div class="pager">
+  <a href="self-signed-certificate-in-chain.html">&larr; Self-signed in chain</a>
+  <a href="openssl-verify-error-codes.html">Next: OpenSSL verify codes &rarr;</a>
+</div>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <h2>CertDecode</h2>
+    <p>An independent reference for TLS certificate troubleshooting. Every command and error code on this site was checked against upstream OpenSSL, curl, Node.js, pip and Git documentation.</p>
+    <ul>
+      <li><a href="index.html">Error lookup</a></li>
+      <li><a href="openssl-verify-error-codes.html">OpenSSL verify codes</a></li>
+      <li><a href="openssl-inspect-certificate.html">openssl cheatsheet</a></li>
+      <li><a href="lets-encrypt-vs-private-ca.html">Let's Encrypt vs private CA</a></li>
+    </ul>
+    <p class="disclosure">CertDecode is not affiliated with the OpenSSL Project, curl, the Node.js Foundation, the Python Software Foundation, the Git project or Let's Encrypt. Site text and examples are original. Content is drafted with AI assistance and reviewed against the upstream sources cited on each page; commands are safe to run, and the verification-bypass flags we discuss are shown as what they are rather than as recommendations.</p>
+  </div>
+</footer>
+
+</body>
+</html>
