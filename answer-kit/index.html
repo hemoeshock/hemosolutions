@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security Questionnaire Answer Kit — product preview &amp; live demo</title>
+<meta name="description" content="See exactly what is inside the Security Questionnaire Answer Kit for B2B SaaS: 56 pre-approved answers with evidence pointers, policy drafts, evidence procedures, checklists and a publishable trust centre. Includes a working triage demo.">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  .demo { border: 1px solid var(--line); border-radius: 12px; padding: 20px; background: var(--soft); margin: 18px 0; }
+  .demo input[type=text] { width: 100%; padding: 11px 13px; border: 1px solid var(--line); border-radius: 8px; font: inherit; background: #fff; }
+  .demo button { margin-top: 10px; background: var(--ink); color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+  .verdict { margin-top: 14px; padding: 14px 16px; border-radius: 8px; background: #fff; border-left: 4px solid var(--accent); display: none; }
+  .verdict h4 { margin: 0 0 6px; font-size: 15px; }
+  .verdict p { margin: 0 0 6px; font-size: 14px; color: var(--muted); }
+  .tag { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; }
+  .tag.a { background: #e6f4ea; color: #14663a; }
+  .tag.b { background: #fdf3e2; color: #8a5a00; }
+  .tag.c { background: #fdeaea; color: #a12020; }
+  pre { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: 14px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; margin: 12px 0; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .tree { font-size: 13.5px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <a class="brand" href="../index.html">Hemo&nbsp;Solutions</a>
+    <nav>
+      <a href="../index.html">Store</a>
+      <a href="../certdecode/">Free: CertDecode</a>
+      <a href="../index.html#contact">Contact</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="hero">
+    <p class="fine" style="margin-bottom:8px"><a href="../index.html">← Back to the store</a></p>
+    <h1>Security Questionnaire Answer Kit for B2B SaaS</h1>
+    <p class="lede">A preview of exactly what you get: real excerpts from the answer library and the
+    triage workflow, the full file manifest, and a <strong>working demo</strong> of the triage step
+    used in the kit — try it below.</p>
+    <p class="price">$24 <span class="note">one-time payment · instant download · MIT licence</span></p>
+    <p class="cta"><a class="btn" href="https://hemosolutions.lemonsqueezy.com" rel="noopener">Buy the kit — $24</a></p>
+  </section>
+
+  <section>
+    <h2>Try it: the triage step, working</h2>
+    <p>The kit's first move is not writing answers — it is sorting every row into three buckets.
+    Paste a questionnaire row below and the demo applies the kit's triage rules.</p>
+    <div class="demo">
+      <label for="q" class="fine" style="display:block;margin-bottom:6px">A row from a customer's security questionnaire</label>
+      <input id="q" type="text" placeholder="e.g. Do you enforce MFA for all workforce accounts?" autocomplete="off">
+      <button onclick="triage()">Triage this row</button>
+      <div class="verdict" id="v"></div>
+    </div>
+    <p class="fine">This is a faithful, simplified implementation of the triage rules in
+    <code>src/checklists/questionnaire-triage.md</code>. The full kit includes the complete workflow,
+    the escalation templates, and the tracker CSV you triage into.</p>
+  </section>
+
+  <section>
+    <h2>How the kit answers — three answer shapes</h2>
+    <p>Every entry in the library is written in one of three shapes, so you never have to invent a
+    flattering answer. This table is taken verbatim from the kit:</p>
+    <table>
+      <tr><th>Shape</th><th>When to use</th><th>Example</th></tr>
+      <tr><td><strong>Yes, with evidence</strong></td><td>You genuinely do this, today, with a record</td>
+        <td>“Yes — MFA is enforced for all workforce accounts. Evidence: IdP policy export, 2026-09-30.”</td></tr>
+      <tr><td><strong>Not yet, with a date</strong></td><td>You don't, but you have committed to a plan</td>
+        <td>“Not yet. MFA is enforced on all production and billing accounts; the remaining 4 contractor accounts are tracked in <code>access-review-log.csv</code> with a target date of 2026-11-15.”</td></tr>
+      <tr><td><strong>Scoped</strong></td><td>You do it, but only for part of the estate</td>
+        <td>“Yes, for all customer data in production. Staging and CI use synthetic data only and contain no customer data.”</td></tr>
+    </table>
+    <p class="fine">The kit's own rule, printed under that table: <em>never use the third shape to hide
+    the second one.</em></p>
+  </section>
+
+  <section>
+    <h2>The triage buckets</h2>
+    <table>
+      <tr><th>Bucket</th><th>Meaning</th><th>What happens next</th></tr>
+      <tr><td><span class="tag a">A — answerable now</span></td><td>You do this today and can point to evidence</td><td>Answer it now, attach the evidence link</td></tr>
+      <tr><td><span class="tag b">B — needs evidence</span></td><td>You do this; the record needs to be produced</td><td>File the request, name an owner and a date, answer with the commitment</td></tr>
+      <tr><td><span class="tag c">C — needs a decision</span></td><td>Someone else must decide — legal, founder, a contract</td><td>Escalate in writing on day one</td></tr>
+    </table>
+    <p class="fine">From the kit: “Most questionnaires are 60–70% bucket A. That is the good news.”
+    The full triage workflow adds how to find the gated rows, how to ask for a standard answer set
+    instead of a row-by-row response, and how to answer the rows that need a decision.</p>
+  </section>
+
+  <section>
+    <h2>What is in the download</h2>
+    <pre class="tree">security-questionnaire-kit/
+├── README.md
+├── LICENSE
+└── src/
+    ├── answer-library/
+    │   ├── ANSWER-LIBRARY.md          56 answers across 12 domains
+    │   └── question-tracker.csv       triage tracker (one row per question)
+    ├── checklists/
+    │   ├── questionnaire-triage.md    the workflow under deadline
+    │   ├── pre-audit-readiness.md
+    │   └── quarterly-ops-checklist.md
+    ├── policies/                      6 draft policies (MIT, edit-to-fit)
+    │   ├── access-control.md          change-management.md
+    │   ├── incident-response.md       vendor-management.md
+    │   ├── acceptable-use.md          data-retention-and-deletion.md
+    │   └── README.md
+    ├── evidence/                      procedures + CSV logs to actually keep
+    │   ├── access-review-procedure.md access-review-log.csv
+    │   ├── change-management-procedure.md  incident-log.csv
+    │   ├── vendor-assessment-template.md   vendor-register.csv
+    │   └── README.md
+    ├── trust-center/                  5 publishable static pages + CSS
+    └── workflows/                     GitHub Actions evidence export (yml + .sh)</pre>
+  </section>
+
+  <section>
+    <h2>Sample: one real answer</h2>
+    <p>This is an actual entry from <code>src/answer-library/ANSWER-LIBRARY.md</code> (abbreviated):</p>
+    <pre><strong>SQ-A01 · MFA for workforce accounts</strong>
+
+Yes — multi-factor authentication is enforced for all workforce accounts that can reach
+production or customer data, through the identity provider. Evidence: the IdP policy export
+referenced in <code>evidence/access-review-log.csv</code>, re-exported at each quarterly access
+review.
+
+Scope: contractor accounts on the legacy billing system are excluded and tracked in
+evidence/access-review-log.csv with a target date of 2026-11-15. This answer is deliberately
+"scoped" rather than a flat "yes" — see the answer-shapes rule.</pre>
+  </section>
+
+  <section>
+    <h2>Licence and honesty</h2>
+    <p>The templates are MIT-licensed: use them in client work without attribution. The library
+    paraphrases the <em>topics</em> in widely used assessment instruments (CAIQ, SIG, VSA) and
+    deliberately reproduces none of their wording or numbering — those documents are licensed, so
+    check your customer's form and use the matching entry.</p>
+    <p class="disclosure"><strong>AI-assistance disclosure:</strong> the written and code content was
+    drafted with AI assistance, then reviewed, executed and tested by a human. Nothing here is
+    generated-on-the-fly at purchase time — you get files that were actually run.</p>
+  </section>
+
+  <section>
+    <h2>Questions</h2>
+    <p>Want to see a specific file before buying? <a href="mailto:eng.hemo.27@gmail.com">Email us</a>
+    and we will send a sample. Need a team licence or a custom domain in the trust centre pages?
+    Same address — we answer within a couple of working days.</p>
+    <p class="cta"><a class="btn" href="https://hemosolutions.lemonsqueezy.com" rel="noopener">Buy the Answer Kit — $24</a></p>
+  </section>
+</main>
+
+<footer class="wrap">
+  <p>© 2026 Hemo Solutions · <a href="../index.html">Store</a> · <a href="../certdecode/">CertDecode</a> ·
+  <a href="../index.html#contact">Contact</a></p>
+  <p class="fine">Content drafted with AI assistance, reviewed and tested by a human.</p>
+</footer>
+
+<script>
+function triage() {
+  var q = document.getElementById('q').value.trim();
+  var v = document.getElementById('v');
+  if (!q) { v.style.display = 'block'; v.innerHTML = '<h4>Paste a row first</h4><p>The kit triages one row at a time — type or paste any questionnaire question.</p>'; return; }
+  var s = q.toLowerCase();
+  var bucket, head, body;
+  if (/(mfa|multi-factor|2fa|two-factor|encrypt|encryption|backup|logging|monitor|incident response|patch|vulnerability|antivirus|edr|access control|least privilege)/.test(s)) {
+    bucket = 'a'; head = 'A — answerable now';
+    body = 'This is a control you almost certainly already have. Answer it with the evidence pointer (an IdP policy export, a config screenshot, a log sample) — if the record does not exist yet, move it to bucket B rather than claiming it.';
+  } else if (/(vendor|third[- ]party|processor|subprocessor|dpa|data retention|delete|deletion|breach|notify|notification|training|awareness|audit|insurance|certif|attest)/.test(s)) {
+    bucket = 'b'; head = 'B — needs evidence (or a decision)';
+    body = 'Usually answerable, but the record has to be produced first: a vendor register entry, a DPA, a retention rule, a training log. File the request, name an owner and a date, and answer with the commitment.';
+  } else if (/(contract|legal|board|founder|ownership|liability|insurance|cease|termination|jurisdiction)/.test(s)) {
+    bucket = 'c'; head = 'C — needs a decision';
+    body = 'Somebody else must decide this — legal, the founder, or a contract term. Escalate in writing on day one with the exact question and a deadline. Answering it yourself here is how commitments get made that the business cannot keep.';
+  } else {
+    bucket = 'b'; head = 'B — needs evidence (default)';
+    body = 'No control keyword matched, so treat it as a record you must produce. The kit’s default for an unfamiliar row is bucket B: name an owner, attach what exists, and give a date.';
+  }
+  v.style.display = 'block';
+  v.innerHTML = '<h4><span class="tag ' + bucket + '">' + head + '</span></h4>' +
+    '<p>' + body + '</p>' +
+    '<p><strong>Next step in the kit:</strong> copy the row into <code>question-tracker.csv</code> and fill the owner and date columns. Most questionnaires are 60–70% bucket A.</p>';
+}
+document.getElementById('q').addEventListener('keydown', function (e) { if (e.key === 'Enter') triage(); });
+</script>
+</body>
+</html>
